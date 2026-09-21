@@ -4,3 +4,4 @@ noise==1.2.2
 numpy==2.5.1
 pygame==2.6.1
 PyOpenGL==3.1.10
+PyGLM==2.8.3

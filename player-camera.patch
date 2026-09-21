@@ -1,0 +1,449 @@
+From 235f03e8a1c56ca08190a406b479c0697e2af420 Mon Sep 17 00:00:00 2001
+From: Claude <claude@assistant.local>
+Date: Mon, 21 Sep 2026 17:05:22 +0000
+Subject: [PATCH] Add 3D cube rendering with FPS camera (WASD + mouse look)
+
+- Camera: view/projection matrices via PyGLM, yaw/pitch look, WASD+space/shift movement
+- InputHandler: tracks held keys and per-frame mouse delta
+- Cube mesh: 24 verts (per-face color) + EBO index buffer, replaces TestTriangle
+- Shaders: now take m_proj/m_view/m_model uniforms and per-vertex color
+- Window: added on_keydown/on_keyup hooks, flush initial mouse delta on grab
+- requirements.txt: added PyGLM for matrix math
+---
+ requirements.txt              |  3 +-
+ src/core/app.py               | 49 +++++++++++++++++----
+ src/core/window.py            | 20 ++++++++-
+ src/player/camera.py          | 80 +++++++++++++++++++++++++++++++++++
+ src/player/input_handler.py   | 41 ++++++++++++++++++
+ src/rendering/mesh_builder.py | 80 ++++++++++++++++++++++++++++++++++-
+ src/shaders/default.frag      |  9 ++--
+ src/shaders/default.vert      | 24 +++++++----
+ 8 files changed, 279 insertions(+), 27 deletions(-)
+
+diff --git a/requirements.txt b/requirements.txt
+index 5b1f901..7b157e4 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -3,4 +3,5 @@ moderngl==5.12.0
+ noise==1.2.2
+ numpy==2.5.1
+ pygame==2.6.1
+-PyOpenGL==3.1.10
+\ No newline at end of file
++PyOpenGL==3.1.10
++PyGLM==2.8.3
+\ No newline at end of file
+diff --git a/src/core/app.py b/src/core/app.py
+index aadac83..868b9cc 100644
+--- a/src/core/app.py
++++ b/src/core/app.py
+@@ -6,42 +6,73 @@
+ 
+ import pygame
+ import moderngl
++import glm
+ from core.window import Window
+ from core.settings import *
++from player.camera import Camera
++from player.input_handler import InputHandler
+ from rendering.shader import ShaderProgram
+-from rendering.mesh_builder import TestTriangle
++from rendering.mesh_builder import Cube
+ 
+ 
+ class App(Window):
+     def __init__(self):
+         super().__init__()
+ 
++        # Input + camera
++        self.input  = InputHandler()
++        self.camera = Camera(position = (0, 0, 3))
++
+         # Load and compile the default shader program
+         self.shader  = ShaderProgram(self.ctx)
+         self.program = self.shader.load('default')
+ 
+-        # Build the test triangle using that shader
+-        self.triangle = TestTriangle(self.ctx, self.program)
++        # Build the cube using that shader
++        self.cube = Cube(self.ctx, self.program)
++
++        # Where the cube sits in the world — identity = centered at origin,
++        # no rotation, no scale. This will matter once we have many objects.
++        self.m_model = glm.mat4()
+ 
+         self.run()
+ 
++    # -------------------------------------------------------------------------
++    # Window calls these when it sees KEYDOWN/KEYUP events (see window.py)
++    def on_keydown(self, key):
++        self.input.handle_keydown(key)
++
++    def on_keyup(self, key):
++        self.input.handle_keyup(key)
++
+     # -------------------------------------------------------------------------
+     def run(self):
+         while True:
++            dt = self.clock.tick(60)   # milliseconds since the last frame
+             self.handle_events()
++            self.update(dt)
+             self.render()
+             pygame.display.flip()
+-            self.clock.tick(60)
++
++    # -------------------------------------------------------------------------
++    def update(self, dt):
++        self.input.update_mouse()
++        self.camera.update(
++            self.input.keys, self.input.mouse_dx, self.input.mouse_dy, dt
++        )
++
++        # Push the latest matrices to the GPU. moderngl accepts glm matrices
++        # directly — they support the buffer protocol .write() needs.
++        self.program['m_proj'].write(self.camera.m_proj)
++        self.program['m_view'].write(self.camera.m_view)
++        self.program['m_model'].write(self.m_model)
+ 
+     # -------------------------------------------------------------------------
+     def render(self):
+         self.ctx.clear(color = BG_COLOR)
+-
+-        # Tell the triangle to draw itself
+-        self.triangle.render()
++        self.cube.render()
+ 
+     # -------------------------------------------------------------------------
+     def quit(self):
+-        self.triangle.destroy()
++        self.cube.destroy()
+         self.shader.destroy()
+-        super().quit()
+\ No newline at end of file
++        super().quit()
+diff --git a/src/core/window.py b/src/core/window.py
+index 30a0096..474a207 100644
+--- a/src/core/window.py
++++ b/src/core/window.py
+@@ -35,6 +35,11 @@ class Window:
+         pygame.event.set_grab(True)
+         pygame.mouse.set_visible(False)
+ 
++        # get_rel() reports movement SINCE THE LAST CALL — the very first
++        # reading can be a big leftover jump from before the window had
++        # focus, so we throw one reading away here to start clean.
++        pygame.mouse.get_rel()
++
+     # -------------------------------------------------------------------------
+     def init_opengl(self):
+         ctx = moderngl.create_context()
+@@ -52,9 +57,22 @@ class Window:
+         for event in pygame.event.get():
+             if event.type == pygame.QUIT:
+                 self.quit()
+-            if event.type == pygame.KEYDOWN:
++            elif event.type == pygame.KEYDOWN:
+                 if event.key == pygame.K_ESCAPE:
+                     self.quit()
++                else:
++                    self.on_keydown(event.key)
++            elif event.type == pygame.KEYUP:
++                self.on_keyup(event.key)
++
++    # -------------------------------------------------------------------------
++    # Hooks for subclasses (App) that care about individual key presses.
++    # Window itself doesn't need them — left as no-ops here.
++    def on_keydown(self, key):
++        pass
++
++    def on_keyup(self, key):
++        pass
+ 
+     # -------------------------------------------------------------------------
+     def quit(self):
+diff --git a/src/player/camera.py b/src/player/camera.py
+index e69de29..ef9c758 100644
+--- a/src/player/camera.py
++++ b/src/player/camera.py
+@@ -0,0 +1,80 @@
++# =============================================================================
++# CAMERA — FPS-style camera. Owns the view matrix (where we're looking from)
++# and the projection matrix (how 3D turns into what's on screen).
++# =============================================================================
++
++import glm
++from core.settings import *
++
++
++class Camera:
++    def __init__(self, position = (0, 0, 3), yaw = -90, pitch = 0):
++        self.position = glm.vec3(position)
++        self.yaw      = yaw      # rotation around the Y axis (left/right look)
++        self.pitch    = pitch    # rotation around the X axis (up/down look)
++
++        # Direction vectors, recalculated every time yaw/pitch change
++        self.forward  = glm.vec3(0, 0, -1)
++        self.right    = glm.vec3(1, 0, 0)
++        self.up       = glm.vec3(0, 1, 0)
++
++        self.m_proj = self.get_projection_matrix()   # doesn't change at runtime
++        self.update_vectors()
++        self.m_view = self.get_view_matrix()
++
++    # -------------------------------------------------------------------------
++    def update_vectors(self):
++        """
++        Recompute forward/right/up from the current yaw and pitch.
++        This is standard spherical-to-cartesian conversion.
++        """
++        yaw   = glm.radians(self.yaw)
++        pitch = glm.radians(self.pitch)
++
++        forward = glm.vec3()
++        forward.x = glm.cos(yaw) * glm.cos(pitch)
++        forward.y = glm.sin(pitch)
++        forward.z = glm.sin(yaw) * glm.cos(pitch)
++
++        self.forward = glm.normalize(forward)
++        self.right   = glm.normalize(glm.cross(self.forward, glm.vec3(0, 1, 0)))
++        self.up      = glm.normalize(glm.cross(self.right, self.forward))
++
++    # -------------------------------------------------------------------------
++    def rotate(self, dx, dy):
++        """dx/dy are raw mouse pixel deltas for this frame."""
++        self.yaw   += dx * MOUSE_SENSITIVITY
++        self.pitch -= dy * MOUSE_SENSITIVITY   # inverted: mouse up = look up
++
++        # stop the camera from flipping upside down
++        self.pitch = max(-89.0, min(89.0, self.pitch))
++
++        self.update_vectors()
++
++    # -------------------------------------------------------------------------
++    def move(self, keys, dt):
++        velocity = PLAYER_SPEED * dt   # dt is milliseconds since last frame
++
++        if keys['w']:     self.position += self.forward * velocity
++        if keys['s']:     self.position -= self.forward * velocity
++        if keys['a']:     self.position -= self.right   * velocity
++        if keys['d']:     self.position += self.right   * velocity
++        if keys['space']: self.position += glm.vec3(0, 1, 0) * velocity
++        if keys['shift']: self.position -= glm.vec3(0, 1, 0) * velocity
++
++    # -------------------------------------------------------------------------
++    def update(self, keys, mouse_dx, mouse_dy, dt):
++        """Called once per frame from App.update()."""
++        self.rotate(mouse_dx, mouse_dy)
++        self.move(keys, dt)
++        self.m_view = self.get_view_matrix()
++
++    # -------------------------------------------------------------------------
++    def get_view_matrix(self):
++        return glm.lookAt(self.position, self.position + self.forward, self.up)
++
++    # -------------------------------------------------------------------------
++    def get_projection_matrix(self):
++        return glm.perspective(
++            glm.radians(FOV), WINDOW_ASPECT_RATIO, NEAR_PLANE, FAR_PLANE
++        )
+diff --git a/src/player/input_handler.py b/src/player/input_handler.py
+index e69de29..dd5fc3c 100644
+--- a/src/player/input_handler.py
++++ b/src/player/input_handler.py
+@@ -0,0 +1,41 @@
++# =============================================================================
++# INPUT HANDLER — Tracks which movement keys are currently held down and the
++# mouse's movement this frame. The Camera reads this to know how to move/look.
++# =============================================================================
++
++import pygame
++
++
++class InputHandler:
++    # Maps pygame key constants to the simple names Camera.move() checks
++    KEY_MAP = {
++        pygame.K_w:      'w',
++        pygame.K_a:      'a',
++        pygame.K_s:      's',
++        pygame.K_d:      'd',
++        pygame.K_SPACE:  'space',
++        pygame.K_LSHIFT: 'shift',
++    }
++
++    def __init__(self):
++        self.keys = {name: False for name in self.KEY_MAP.values()}
++        self.mouse_dx = 0
++        self.mouse_dy = 0
++
++    # -------------------------------------------------------------------------
++    def handle_keydown(self, key):
++        if key in self.KEY_MAP:
++            self.keys[self.KEY_MAP[key]] = True
++
++    # -------------------------------------------------------------------------
++    def handle_keyup(self, key):
++        if key in self.KEY_MAP:
++            self.keys[self.KEY_MAP[key]] = False
++
++    # -------------------------------------------------------------------------
++    def update_mouse(self):
++        """
++        pygame.mouse.get_rel() returns how far the mouse moved since the last
++        call, then resets to (0, 0). Call this exactly once per frame.
++        """
++        self.mouse_dx, self.mouse_dy = pygame.mouse.get_rel()
+diff --git a/src/rendering/mesh_builder.py b/src/rendering/mesh_builder.py
+index a27fa1b..7822976 100644
+--- a/src/rendering/mesh_builder.py
++++ b/src/rendering/mesh_builder.py
+@@ -1,6 +1,7 @@
+ # =============================================================================
+-# MESH BUILDER — For now, builds a test triangle to confirm the pipeline works
+-# This file will later handle voxel chunk geometry
++# MESH BUILDER — TestTriangle confirmed the pipeline works. Cube is the next
++# step: real 3D geometry, drawn with an index buffer instead of raw triangles.
++# This file will later be replaced by chunk-based voxel meshing.
+ # =============================================================================
+ 
+ import numpy as np
+@@ -45,6 +46,81 @@ class TestTriangle:
+     def render(self):
+         self.vao.render()
+ 
++    # -------------------------------------------------------------------------
++    def destroy(self):
++        self.vao.release()
++
++
++class Cube:
++    """
++    A single unit cube centered on the origin, from -0.5 to 0.5 on each axis.
++    Each of the 6 faces gets its own 4 vertices (so it can have its own flat
++    color/normal) instead of sharing corners — 24 vertices total, drawn with
++    an index buffer (EBO) so we don't repeat vertex data for the 12 triangles.
++    """
++
++    def __init__(self, ctx, shader_program):
++        self.ctx            = ctx
++        self.shader_program = shader_program
++        self.vao            = self.build()
++
++    # -------------------------------------------------------------------------
++    def build(self):
++        # One flat color per face — makes it easy to see the cube rotate
++        # correctly once the camera is moving.
++        RED     = (1.0, 0.2, 0.2)
++        GREEN   = (0.2, 1.0, 0.2)
++        BLUE    = (0.2, 0.4, 1.0)
++        YELLOW  = (1.0, 1.0, 0.2)
++        CYAN    = (0.2, 1.0, 1.0)
++        MAGENTA = (1.0, 0.2, 1.0)
++
++        # Each tuple is (x, y, z, r, g, b) — position interleaved with color
++        raw = [
++            # Front face  (z = +0.5)
++            (-0.5, -0.5,  0.5, *RED), ( 0.5, -0.5,  0.5, *RED),
++            ( 0.5,  0.5,  0.5, *RED), (-0.5,  0.5,  0.5, *RED),
++            # Back face   (z = -0.5)
++            ( 0.5, -0.5, -0.5, *GREEN), (-0.5, -0.5, -0.5, *GREEN),
++            (-0.5,  0.5, -0.5, *GREEN), ( 0.5,  0.5, -0.5, *GREEN),
++            # Left face   (x = -0.5)
++            (-0.5, -0.5, -0.5, *BLUE), (-0.5, -0.5,  0.5, *BLUE),
++            (-0.5,  0.5,  0.5, *BLUE), (-0.5,  0.5, -0.5, *BLUE),
++            # Right face  (x = +0.5)
++            ( 0.5, -0.5,  0.5, *YELLOW), ( 0.5, -0.5, -0.5, *YELLOW),
++            ( 0.5,  0.5, -0.5, *YELLOW), ( 0.5,  0.5,  0.5, *YELLOW),
++            # Top face    (y = +0.5)
++            (-0.5,  0.5,  0.5, *CYAN), ( 0.5,  0.5,  0.5, *CYAN),
++            ( 0.5,  0.5, -0.5, *CYAN), (-0.5,  0.5, -0.5, *CYAN),
++            # Bottom face (y = -0.5)
++            (-0.5, -0.5, -0.5, *MAGENTA), ( 0.5, -0.5, -0.5, *MAGENTA),
++            ( 0.5, -0.5,  0.5, *MAGENTA), (-0.5, -0.5,  0.5, *MAGENTA),
++        ]
++        vertices = np.array(raw, dtype = 'f4').flatten()
++
++        # Two triangles per face, each face's 4 verts start at index i*4
++        indices = []
++        for face in range(6):
++            base = face * 4
++            indices += [base, base + 1, base + 2, base, base + 2, base + 3]
++        indices = np.array(indices, dtype = 'i4')
++
++        vbo = self.ctx.buffer(vertices)
++        ebo = self.ctx.buffer(indices)
++
++        # '3f 3f' = 3 floats for position, then 3 floats for color, per vertex
++        vao = self.ctx.vertex_array(
++            self.shader_program,
++            [(vbo, '3f 3f', 'in_position', 'in_color')],
++            ebo
++        )
++
++        return vao
++
++    # -------------------------------------------------------------------------
++    def render(self):
++        self.vao.render()
++
+     # -------------------------------------------------------------------------
+     def destroy(self):
+         self.vao.release()
+\ No newline at end of file
+diff --git a/src/shaders/default.frag b/src/shaders/default.frag
+index ff1f39c..fba344c 100644
+--- a/src/shaders/default.frag
++++ b/src/shaders/default.frag
+@@ -1,11 +1,8 @@
+ #version 330 core
+ 
+-// 'out' means this is what we're outputting — the final pixel color
++in vec3 v_color;
+ out vec4 fragColor;
+ 
+ void main() {
+-    // vec4 is RGBA — red, green, blue, alpha
+-    // all values between 0.0 and 1.0
+-    // this makes every pixel of our triangle white
+-    fragColor = vec4(1.0, 1.0, 1.0, 1.0);
+-}
+\ No newline at end of file
++    fragColor = vec4(v_color, 1.0);
++}
+diff --git a/src/shaders/default.vert b/src/shaders/default.vert
+index dff2426..fea12ca 100644
+--- a/src/shaders/default.vert
++++ b/src/shaders/default.vert
+@@ -1,13 +1,21 @@
+ #version 330 core
+ 
+-// 'in' means this data comes IN from the vertex buffer we send from Python
+-// location = 0 means this is attribute slot 0
++// Per-vertex data coming in from the VBO (see mesh_builder.py)
+ in vec3 in_position;
++in vec3 in_color;
++
++// Passed on to the fragment shader — GPU interpolates this across each triangle
++out vec3 v_color;
++
++// Set from Python every frame (see App.update()) — these turn the cube's
++// local coordinates into where it actually appears on screen.
++uniform mat4 m_proj;    // camera lens: perspective/FOV
++uniform mat4 m_view;    // camera position/rotation
++uniform mat4 m_model;   // where this object sits in the world
+ 
+ void main() {
+-    // gl_Position is a built-in variable — this is what the GPU uses
+-    // to know where on screen this vertex lands
+-    // vec4 means 4 values : x, y, z, w
+-    // w = 1.0 always for a regular 3D point
+-    gl_Position = vec4(in_position, 1.0);
+-}
+\ No newline at end of file
++    v_color = in_color;
++
++    // Order matters: model -> view -> projection
++    gl_Position = m_proj * m_view * m_model * vec4(in_position, 1.0);
++}
+-- 
+2.43.0
+

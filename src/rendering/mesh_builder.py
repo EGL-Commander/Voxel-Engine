@@ -1,6 +1,7 @@
 # =============================================================================
-# MESH BUILDER — For now, builds a test triangle to confirm the pipeline works
-# This file will later handle voxel chunk geometry
+# MESH BUILDER — TestTriangle confirmed the pipeline works. Cube is the next
+# step: real 3D geometry, drawn with an index buffer instead of raw triangles.
+# This file will later be replaced by chunk-based voxel meshing.
 # =============================================================================
 
 import numpy as np
@@ -37,6 +38,81 @@ class TestTriangle:
         vao = self.ctx.vertex_array(
             self.shader_program,
             [(vbo, '3f', 'in_position')]
+        )
+
+        return vao
+
+    # -------------------------------------------------------------------------
+    def render(self):
+        self.vao.render()
+
+    # -------------------------------------------------------------------------
+    def destroy(self):
+        self.vao.release()
+
+
+class Cube:
+    """
+    A single unit cube centered on the origin, from -0.5 to 0.5 on each axis.
+    Each of the 6 faces gets its own 4 vertices (so it can have its own flat
+    color/normal) instead of sharing corners — 24 vertices total, drawn with
+    an index buffer (EBO) so we don't repeat vertex data for the 12 triangles.
+    """
+
+    def __init__(self, ctx, shader_program):
+        self.ctx            = ctx
+        self.shader_program = shader_program
+        self.vao            = self.build()
+
+    # -------------------------------------------------------------------------
+    def build(self):
+        # One flat color per face — makes it easy to see the cube rotate
+        # correctly once the camera is moving.
+        RED     = (1.0, 0.2, 0.2)
+        GREEN   = (0.2, 1.0, 0.2)
+        BLUE    = (0.2, 0.4, 1.0)
+        YELLOW  = (1.0, 1.0, 0.2)
+        CYAN    = (0.2, 1.0, 1.0)
+        MAGENTA = (1.0, 0.2, 1.0)
+
+        # Each tuple is (x, y, z, r, g, b) — position interleaved with color
+        raw = [
+            # Front face  (z = +0.5)
+            (-0.5, -0.5,  0.5, *RED), ( 0.5, -0.5,  0.5, *RED),
+            ( 0.5,  0.5,  0.5, *RED), (-0.5,  0.5,  0.5, *RED),
+            # Back face   (z = -0.5)
+            ( 0.5, -0.5, -0.5, *GREEN), (-0.5, -0.5, -0.5, *GREEN),
+            (-0.5,  0.5, -0.5, *GREEN), ( 0.5,  0.5, -0.5, *GREEN),
+            # Left face   (x = -0.5)
+            (-0.5, -0.5, -0.5, *BLUE), (-0.5, -0.5,  0.5, *BLUE),
+            (-0.5,  0.5,  0.5, *BLUE), (-0.5,  0.5, -0.5, *BLUE),
+            # Right face  (x = +0.5)
+            ( 0.5, -0.5,  0.5, *YELLOW), ( 0.5, -0.5, -0.5, *YELLOW),
+            ( 0.5,  0.5, -0.5, *YELLOW), ( 0.5,  0.5,  0.5, *YELLOW),
+            # Top face    (y = +0.5)
+            (-0.5,  0.5,  0.5, *CYAN), ( 0.5,  0.5,  0.5, *CYAN),
+            ( 0.5,  0.5, -0.5, *CYAN), (-0.5,  0.5, -0.5, *CYAN),
+            # Bottom face (y = -0.5)
+            (-0.5, -0.5, -0.5, *MAGENTA), ( 0.5, -0.5, -0.5, *MAGENTA),
+            ( 0.5, -0.5,  0.5, *MAGENTA), (-0.5, -0.5,  0.5, *MAGENTA),
+        ]
+        vertices = np.array(raw, dtype = 'f4').flatten()
+
+        # Two triangles per face, each face's 4 verts start at index i*4
+        indices = []
+        for face in range(6):
+            base = face * 4
+            indices += [base, base + 1, base + 2, base, base + 2, base + 3]
+        indices = np.array(indices, dtype = 'i4')
+
+        vbo = self.ctx.buffer(vertices)
+        ebo = self.ctx.buffer(indices)
+
+        # '3f 3f' = 3 floats for position, then 3 floats for color, per vertex
+        vao = self.ctx.vertex_array(
+            self.shader_program,
+            [(vbo, '3f 3f', 'in_position', 'in_color')],
+            ebo
         )
 
         return vao

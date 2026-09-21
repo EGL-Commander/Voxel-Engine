@@ -35,6 +35,11 @@ class Window:
         pygame.event.set_grab(True)
         pygame.mouse.set_visible(False)
 
+        # get_rel() reports movement SINCE THE LAST CALL — the very first
+        # reading can be a big leftover jump from before the window had
+        # focus, so we throw one reading away here to start clean.
+        pygame.mouse.get_rel()
+
     # -------------------------------------------------------------------------
     def init_opengl(self):
         ctx = moderngl.create_context()
@@ -52,9 +57,22 @@ class Window:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.quit()
-            if event.type == pygame.KEYDOWN:
+            elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     self.quit()
+                else:
+                    self.on_keydown(event.key)
+            elif event.type == pygame.KEYUP:
+                self.on_keyup(event.key)
+
+    # -------------------------------------------------------------------------
+    # Hooks for subclasses (App) that care about individual key presses.
+    # Window itself doesn't need them — left as no-ops here.
+    def on_keydown(self, key):
+        pass
+
+    def on_keyup(self, key):
+        pass
 
     # -------------------------------------------------------------------------
     def quit(self):

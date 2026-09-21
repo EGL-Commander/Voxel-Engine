@@ -1,13 +1,21 @@
 #version 330 core
 
-// 'in' means this data comes IN from the vertex buffer we send from Python
-// location = 0 means this is attribute slot 0
+// Per-vertex data coming in from the VBO (see mesh_builder.py)
 in vec3 in_position;
+in vec3 in_color;
+
+// Passed on to the fragment shader — GPU interpolates this across each triangle
+out vec3 v_color;
+
+// Set from Python every frame (see App.update()) — these turn the cube's
+// local coordinates into where it actually appears on screen.
+uniform mat4 m_proj;    // camera lens: perspective/FOV
+uniform mat4 m_view;    // camera position/rotation
+uniform mat4 m_model;   // where this object sits in the world
 
 void main() {
-    // gl_Position is a built-in variable — this is what the GPU uses
-    // to know where on screen this vertex lands
-    // vec4 means 4 values : x, y, z, w
-    // w = 1.0 always for a regular 3D point
-    gl_Position = vec4(in_position, 1.0);
+    v_color = in_color;
+
+    // Order matters: model -> view -> projection
+    gl_Position = m_proj * m_view * m_model * vec4(in_position, 1.0);
 }
