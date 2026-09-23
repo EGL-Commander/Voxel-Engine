@@ -12,27 +12,25 @@ from core.settings import *
 from player.camera import Camera
 from player.input_handler import InputHandler
 from rendering.shader import ShaderProgram
-from rendering.mesh_builder import Cube
+from world.chunk_manager import ChunkManager
 
 
 class App(Window):
     def __init__(self):
         super().__init__()
 
-        # Input + camera
+        # Input + camera. Positioned up and back from the world's origin so
+        # you spawn looking down at the generated terrain instead of inside it.
         self.input  = InputHandler()
-        self.camera = Camera(position = (0, 0, 3))
+        self.camera = Camera(position = (8, 35, 130), yaw = -90, pitch = -20)
 
         # Load and compile the default shader program
         self.shader  = ShaderProgram(self.ctx)
         self.program = self.shader.load('default')
 
-        # Build the cube using that shader
-        self.cube = Cube(self.ctx, self.program)
-
-        # Where the cube sits in the world — identity = centered at origin,
-        # no rotation, no scale. This will matter once we have many objects.
-        self.m_model = glm.mat4()
+        # Build every chunk in the render-distance grid, each with its own
+        # voxel data (from WorldGenerator) and its own face-culled mesh.
+        self.chunk_manager = ChunkManager(self.ctx, self.program)
 
         self.run()
 
@@ -60,19 +58,19 @@ class App(Window):
             self.input.keys, self.input.mouse_dx, self.input.mouse_dy, dt
         )
 
-        # Push the latest matrices to the GPU. moderngl accepts glm matrices
-        # directly — they support the buffer protocol .write() needs.
+        # Camera matrices only need to be sent once per frame here.
+        # m_model is written per-chunk inside ChunkManager.render() instead,
+        # since every chunk sits at a different world position.
         self.program['m_proj'].write(self.camera.m_proj)
         self.program['m_view'].write(self.camera.m_view)
-        self.program['m_model'].write(self.m_model)
 
     # -------------------------------------------------------------------------
     def render(self):
         self.ctx.clear(color = BG_COLOR)
-        self.cube.render()
+        self.chunk_manager.render(self.program['m_model'])
 
     # -------------------------------------------------------------------------
     def quit(self):
-        self.cube.destroy()
+        self.chunk_manager.destroy()
         self.shader.destroy()
         super().quit()

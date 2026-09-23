@@ -1,0 +1,89 @@
+From 3009874926261ac8539b84b44488c352b6949bef Mon Sep 17 00:00:00 2001
+From: Claude <claude@assistant.local>
+Date: Wed, 23 Sep 2026 07:52:27 +0000
+Subject: [PATCH] Fix player speed and add block shading for terrain
+ readability
+
+- settings.py: PLAYER_SPEED bumped ~30% (0.003 -> 0.004), affects WASD and
+  space/shift equally
+- chunk.py: added FACE_SHADE (directional fake-lighting: top brightest,
+  bottom darkest) so height changes are visible even without a light engine,
+  plus a subtle per-block checkerboard tint so same-height/same-type blocks
+  don't blend into one flat-colored surface
+---
+ src/core/settings.py |  2 +-
+ src/world/chunk.py   | 33 +++++++++++++++++++++++++++++++--
+ 2 files changed, 32 insertions(+), 3 deletions(-)
+
+diff --git a/src/core/settings.py b/src/core/settings.py
+index 65a377b..5c95cde 100644
+--- a/src/core/settings.py
++++ b/src/core/settings.py
+@@ -18,7 +18,7 @@ CHUNK_SIZE          = 16        # each chunk is 16 x 16 x 16 blocks
+ RENDER_DISTANCE     = 4         # how many chunks to load around the player
+ 
+ # --- Player / Camera ---
+-PLAYER_SPEED        = 0.003     # was 0.005 — felt a bit fast, dialed down
++PLAYER_SPEED        = 0.004     # was 0.003 — bumped ~30%, applies to WASD + space/shift
+ MOUSE_SENSITIVITY   = 0.12      # was 0.002 — way too low, ~60x more here
+ FOV                 = 50        # field of view in degrees
+ NEAR_PLANE          = 0.1       # closest distance camera renders
+diff --git a/src/world/chunk.py b/src/world/chunk.py
+index deaa1b7..869d339 100644
+--- a/src/world/chunk.py
++++ b/src/world/chunk.py
+@@ -34,6 +34,23 @@ FACES = {
+     'back':   ((0, 0, -1), [(1, 0, 0), (0, 0, 0), (0, 1, 0), (1, 1, 0)]),
+ }
+ 
++# Fake directional lighting: with no texture atlas yet, every top face of
++# every grass block is the exact same flat green, so two grass blocks that
++# happen to be at the same height are visually indistinguishable from one
++# another — there's nothing to tell you where one cube ends and the next
++# begins. Multiplying each face by a fixed brightness per direction (top
++# brightest, like sunlight from directly above, sides dimmer, bottom
++# darkest) is the classic cheap trick voxel engines use to make individual
++# blocks and height changes readable without any lighting engine at all.
++FACE_SHADE = {
++    'top':    1.00,
++    'front':  0.85,
++    'right':  0.80,
++    'left':   0.75,
++    'back':   0.70,
++    'bottom': 0.55,
++}
++
+ 
+ class Chunk:
+     def __init__(self, ctx, shader_program, chunk_x, chunk_z, world_generator):
+@@ -101,13 +118,25 @@ class Chunk:
+                     if block == AIR:
+                         continue
+ 
+-                    color = BLOCK_COLORS[block]
++                    base_color = BLOCK_COLORS[block]
+ 
+-                    for offset, corners in FACES.values():
++                    # A tiny alternating tint per block column (like a
++                    # checkerboard) — on top of the directional shading
++                    # below, this is what makes a flat field of same-height,
++                    # same-type blocks still read as individual cubes instead
++                    # of one solid painted surface.
++                    world_x = self.chunk_x * CHUNK_SIZE + lx
++                    world_z = self.chunk_z * CHUNK_SIZE + lz
++                    tint = 1.06 if (world_x + world_z) % 2 == 0 else 0.94
++
++                    for face_name, (offset, corners) in FACES.items():
+                         nx, ny, nz = lx + offset[0], ly + offset[1], lz + offset[2]
+                         if self.is_solid(nx, ny, nz):
+                             continue   # hidden face — a neighbor block covers it
+ 
++                        shade = FACE_SHADE[face_name] * tint
++                        color = tuple(min(1.0, c * shade) for c in base_color)
++
+                         for cx, cy, cz in corners:
+                             vertices.extend([lx + cx, ly + cy, lz + cz, *color])
+ 
+-- 
+2.43.0
+

@@ -1,0 +1,357 @@
+From 69700b4e638e3214eb8fcd48efa6c6f65eb70e16 Mon Sep 17 00:00:00 2001
+From: Claude <claude@assistant.local>
+Date: Wed, 23 Sep 2026 06:31:52 +0000
+Subject: [PATCH] Add voxel chunks with face-culled meshing + Perlin noise
+ terrain
+
+- settings.py: fixed mouse sensitivity (was 60x too low) and player speed
+  (was too fast), added world-generation tuning constants
+- world_generator.py: Perlin noise heightmap (pnoise2) per (x,z) column
+- chunk.py: 16x16x16 voxel grid per chunk, builds mesh from ONLY the faces
+  touching air (huge triangle-count savings), grass/dirt/stone layering
+- chunk_manager.py: builds a RENDER_DISTANCE grid of chunks, positions each
+  with its own model-matrix translation at render time
+- app.py: swapped the single test Cube for the full ChunkManager-driven
+  world, repositioned camera to spawn above the generated terrain
+---
+ src/core/app.py              |  26 +++----
+ src/core/settings.py         |  11 ++-
+ src/world/chunk.py           | 144 +++++++++++++++++++++++++++++++++++
+ src/world/chunk_manager.py   |  50 ++++++++++++
+ src/world/world_generator.py |  32 ++++++++
+ 5 files changed, 247 insertions(+), 16 deletions(-)
+
+diff --git a/src/core/app.py b/src/core/app.py
+index 868b9cc..3191605 100644
+--- a/src/core/app.py
++++ b/src/core/app.py
+@@ -12,27 +12,25 @@ from core.settings import *
+ from player.camera import Camera
+ from player.input_handler import InputHandler
+ from rendering.shader import ShaderProgram
+-from rendering.mesh_builder import Cube
++from world.chunk_manager import ChunkManager
+ 
+ 
+ class App(Window):
+     def __init__(self):
+         super().__init__()
+ 
+-        # Input + camera
++        # Input + camera. Positioned up and back from the world's origin so
++        # you spawn looking down at the generated terrain instead of inside it.
+         self.input  = InputHandler()
+-        self.camera = Camera(position = (0, 0, 3))
++        self.camera = Camera(position = (8, 35, 130), yaw = -90, pitch = -20)
+ 
+         # Load and compile the default shader program
+         self.shader  = ShaderProgram(self.ctx)
+         self.program = self.shader.load('default')
+ 
+-        # Build the cube using that shader
+-        self.cube = Cube(self.ctx, self.program)
+-
+-        # Where the cube sits in the world — identity = centered at origin,
+-        # no rotation, no scale. This will matter once we have many objects.
+-        self.m_model = glm.mat4()
++        # Build every chunk in the render-distance grid, each with its own
++        # voxel data (from WorldGenerator) and its own face-culled mesh.
++        self.chunk_manager = ChunkManager(self.ctx, self.program)
+ 
+         self.run()
+ 
+@@ -60,19 +58,19 @@ class App(Window):
+             self.input.keys, self.input.mouse_dx, self.input.mouse_dy, dt
+         )
+ 
+-        # Push the latest matrices to the GPU. moderngl accepts glm matrices
+-        # directly — they support the buffer protocol .write() needs.
++        # Camera matrices only need to be sent once per frame here.
++        # m_model is written per-chunk inside ChunkManager.render() instead,
++        # since every chunk sits at a different world position.
+         self.program['m_proj'].write(self.camera.m_proj)
+         self.program['m_view'].write(self.camera.m_view)
+-        self.program['m_model'].write(self.m_model)
+ 
+     # -------------------------------------------------------------------------
+     def render(self):
+         self.ctx.clear(color = BG_COLOR)
+-        self.cube.render()
++        self.chunk_manager.render(self.program['m_model'])
+ 
+     # -------------------------------------------------------------------------
+     def quit(self):
+-        self.cube.destroy()
++        self.chunk_manager.destroy()
+         self.shader.destroy()
+         super().quit()
+diff --git a/src/core/settings.py b/src/core/settings.py
+index ed1c96b..65a377b 100644
+--- a/src/core/settings.py
++++ b/src/core/settings.py
+@@ -18,11 +18,18 @@ CHUNK_SIZE          = 16        # each chunk is 16 x 16 x 16 blocks
+ RENDER_DISTANCE     = 4         # how many chunks to load around the player
+ 
+ # --- Player / Camera ---
+-PLAYER_SPEED        = 0.005
+-MOUSE_SENSITIVITY   = 0.002
++PLAYER_SPEED        = 0.003     # was 0.005 — felt a bit fast, dialed down
++MOUSE_SENSITIVITY   = 0.12      # was 0.002 — way too low, ~60x more here
+ FOV                 = 50        # field of view in degrees
+ NEAR_PLANE          = 0.1       # closest distance camera renders
+ FAR_PLANE           = 2000.0    # furthest distance camera renders
+ 
++# --- World Generation ---
++WORLD_SEED           = 42       # change this to get a different-looking world
++NOISE_SCALE          = 0.08     # smaller = smoother, larger = spikier terrain
++NOISE_OCTAVES        = 3        # layers of detail in the noise
++TERRAIN_BASE_HEIGHT  = 6        # average ground height (in blocks, 0-15)
++TERRAIN_AMPLITUDE    = 4        # how far hills rise/fall from the base height
++
+ # --- Background color (sky) ---
+ BG_COLOR            = (0.58, 0.83, 0.99)    # light blue RGB values 0.0 to 1.0
+\ No newline at end of file
+diff --git a/src/world/chunk.py b/src/world/chunk.py
+index e69de29..deaa1b7 100644
+--- a/src/world/chunk.py
++++ b/src/world/chunk.py
+@@ -0,0 +1,144 @@
++# =============================================================================
++# CHUNK — A 16x16x16 grid of blocks. Builds its own mesh, but only from the
++# faces that are actually visible (a face touching another solid block is
++# skipped entirely). This one change is what makes rendering a whole world
++# of cubes possible — without it we'd be drawing millions of hidden faces.
++# =============================================================================
++
++import numpy as np
++from core.settings import *
++
++# --- Block IDs --------------------------------------------------------------
++AIR   = 0
++GRASS = 1
++DIRT  = 2
++STONE = 3
++
++# Flat color per block type. Good enough until texture_manager.py is wired up.
++BLOCK_COLORS = {
++    GRASS: (0.40, 0.75, 0.30),
++    DIRT:  (0.50, 0.36, 0.20),
++    STONE: (0.55, 0.55, 0.58),
++}
++
++# For each of the 6 directions a face can point: (offset to the neighbor
++# block, and the 4 corner points of that face in counter-clockwise order as
++# seen from outside the cube — required for backface culling to work).
++# Corner offsets are relative to the block's own (0,0,0) corner, going 0-1.
++FACES = {
++    'right':  ((1, 0, 0),  [(1, 0, 1), (1, 0, 0), (1, 1, 0), (1, 1, 1)]),
++    'left':   ((-1, 0, 0), [(0, 0, 0), (0, 0, 1), (0, 1, 1), (0, 1, 0)]),
++    'top':    ((0, 1, 0),  [(0, 1, 1), (1, 1, 1), (1, 1, 0), (0, 1, 0)]),
++    'bottom': ((0, -1, 0), [(0, 0, 0), (1, 0, 0), (1, 0, 1), (0, 0, 1)]),
++    'front':  ((0, 0, 1),  [(0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)]),
++    'back':   ((0, 0, -1), [(1, 0, 0), (0, 0, 0), (0, 1, 0), (1, 1, 0)]),
++}
++
++
++class Chunk:
++    def __init__(self, ctx, shader_program, chunk_x, chunk_z, world_generator):
++        self.ctx             = ctx
++        self.shader_program  = shader_program
++        self.chunk_x         = chunk_x     # chunk grid coordinates, NOT world coords
++        self.chunk_z         = chunk_z
++
++        self.voxels = self.generate_voxels(world_generator)
++        self.vao    = self.build_mesh()
++
++    # -------------------------------------------------------------------------
++    def generate_voxels(self, world_generator):
++        """
++        Fills a CHUNK_SIZE^3 array with block IDs based on the world
++        generator's height for each (x, z) column: grass on top, a few
++        layers of dirt, stone for everything below that, air above ground.
++        """
++        voxels = np.zeros((CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE), dtype = np.uint8)
++
++        for lx in range(CHUNK_SIZE):
++            for lz in range(CHUNK_SIZE):
++                # local chunk coords -> world coords, so terrain lines up
++                # seamlessly between neighboring chunks
++                world_x = self.chunk_x * CHUNK_SIZE + lx
++                world_z = self.chunk_z * CHUNK_SIZE + lz
++                height  = world_generator.get_height(world_x, world_z)
++
++                for ly in range(CHUNK_SIZE):
++                    if ly > height:
++                        voxels[lx, ly, lz] = AIR
++                    elif ly == height:
++                        voxels[lx, ly, lz] = GRASS
++                    elif ly >= height - 2:
++                        voxels[lx, ly, lz] = DIRT
++                    else:
++                        voxels[lx, ly, lz] = STONE
++
++        return voxels
++
++    # -------------------------------------------------------------------------
++    def is_solid(self, lx, ly, lz):
++        """
++        True if the given LOCAL position holds a non-air block.
++        Anything outside this chunk's own bounds is treated as air for now —
++        meaning faces right at a chunk's edge get drawn even when the
++        neighboring chunk is solid there. Wastes a few triangles at chunk
++        borders but keeps this milestone simple; fixable later by looking
++        up the neighboring chunk instead of assuming air.
++        """
++        if 0 <= lx < CHUNK_SIZE and 0 <= ly < CHUNK_SIZE and 0 <= lz < CHUNK_SIZE:
++            return self.voxels[lx, ly, lz] != AIR
++        return False
++
++    # -------------------------------------------------------------------------
++    def build_mesh(self):
++        vertices = []
++        indices  = []
++        next_index = 0
++
++        for lx in range(CHUNK_SIZE):
++            for ly in range(CHUNK_SIZE):
++                for lz in range(CHUNK_SIZE):
++                    block = self.voxels[lx, ly, lz]
++                    if block == AIR:
++                        continue
++
++                    color = BLOCK_COLORS[block]
++
++                    for offset, corners in FACES.values():
++                        nx, ny, nz = lx + offset[0], ly + offset[1], lz + offset[2]
++                        if self.is_solid(nx, ny, nz):
++                            continue   # hidden face — a neighbor block covers it
++
++                        for cx, cy, cz in corners:
++                            vertices.extend([lx + cx, ly + cy, lz + cz, *color])
++
++                        # two triangles per face, using this face's 4 verts
++                        indices.extend([
++                            next_index,     next_index + 1, next_index + 2,
++                            next_index,     next_index + 2, next_index + 3,
++                        ])
++                        next_index += 4
++
++        if not vertices:
++            return None   # an all-air chunk has nothing to draw
++
++        vertices = np.array(vertices, dtype = 'f4')
++        indices  = np.array(indices,  dtype = 'i4')
++
++        vbo = self.ctx.buffer(vertices)
++        ebo = self.ctx.buffer(indices)
++
++        return self.ctx.vertex_array(
++            self.shader_program,
++            [(vbo, '3f 3f', 'in_position', 'in_color')],
++            ebo
++        )
++
++    # -------------------------------------------------------------------------
++    def render(self):
++        if self.vao is not None:
++            self.vao.render()
++
++    # -------------------------------------------------------------------------
++    def destroy(self):
++        if self.vao is not None:
++            self.vao.release()
+diff --git a/src/world/chunk_manager.py b/src/world/chunk_manager.py
+index e69de29..2fdbb33 100644
+--- a/src/world/chunk_manager.py
++++ b/src/world/chunk_manager.py
+@@ -0,0 +1,50 @@
++# =============================================================================
++# CHUNK MANAGER — Owns every chunk currently loaded, builds them all up front
++# from the world generator, and draws each one at its correct world position.
++# =============================================================================
++
++import glm
++from core.settings import *
++from world.chunk import Chunk
++from world.world_generator import WorldGenerator
++
++
++class ChunkManager:
++    def __init__(self, ctx, shader_program):
++        self.ctx             = ctx
++        self.shader_program  = shader_program
++        self.world_generator = WorldGenerator()
++
++        self.chunks = {}   # (chunk_x, chunk_z) -> Chunk
++        self.build_chunks()
++
++    # -------------------------------------------------------------------------
++    def build_chunks(self):
++        """
++        Builds a square grid of chunks, RENDER_DISTANCE chunks out from the
++        origin in every direction. Static for now — this will later rebuild
++        around the player as they move instead of generating everything once.
++        """
++        r = RENDER_DISTANCE
++        for cx in range(-r, r + 1):
++            for cz in range(-r, r + 1):
++                self.chunks[(cx, cz)] = Chunk(
++                    self.ctx, self.shader_program, cx, cz, self.world_generator
++                )
++
++    # -------------------------------------------------------------------------
++    def render(self, m_model_uniform):
++        """
++        Each chunk's mesh is built in LOCAL coordinates (0-16), so we position
++        it in the world by writing a fresh translation into m_model right
++        before drawing it.
++        """
++        for (chunk_x, chunk_z), chunk in self.chunks.items():
++            world_offset = glm.vec3(chunk_x * CHUNK_SIZE, 0, chunk_z * CHUNK_SIZE)
++            m_model_uniform.write(glm.translate(glm.mat4(), world_offset))
++            chunk.render()
++
++    # -------------------------------------------------------------------------
++    def destroy(self):
++        for chunk in self.chunks.values():
++            chunk.destroy()
+diff --git a/src/world/world_generator.py b/src/world/world_generator.py
+index e69de29..68af454 100644
+--- a/src/world/world_generator.py
++++ b/src/world/world_generator.py
+@@ -0,0 +1,32 @@
++# =============================================================================
++# WORLD GENERATOR — Decides the terrain height at every (x, z) column using
++# Perlin noise. Chunks call get_height() to know how tall to build each
++# column of blocks. This is the "procedural" in Procedural World Generation.
++# =============================================================================
++
++from noise import pnoise2
++from core.settings import *
++
++
++class WorldGenerator:
++    def __init__(self, seed = WORLD_SEED):
++        self.seed = seed
++
++    # -------------------------------------------------------------------------
++    def get_height(self, world_x, world_z):
++        """
++        Returns the ground height (in blocks) at a given WORLD (not local
++        chunk) x/z coordinate. Same input always gives the same output —
++        that's what makes the world persistent without storing every block.
++        """
++        noise_value = pnoise2(
++            world_x * NOISE_SCALE,
++            world_z * NOISE_SCALE,
++            octaves = NOISE_OCTAVES,
++            base    = self.seed,
++        )
++        # pnoise2 returns roughly -1.0 to 1.0 — scale that into a block height
++        height = int(TERRAIN_BASE_HEIGHT + noise_value * TERRAIN_AMPLITUDE)
++
++        # keep it inside the chunk's vertical bounds (0 to CHUNK_SIZE - 1)
++        return max(0, min(CHUNK_SIZE - 1, height))
+-- 
+2.43.0
+
