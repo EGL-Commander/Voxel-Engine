@@ -14,12 +14,23 @@ GRASS = 1
 DIRT  = 2
 STONE = 3
 
-# Flat color per block type. Good enough until texture_manager.py is wired up.
-BLOCK_COLORS = {
-    GRASS: (0.40, 0.75, 0.30),
-    DIRT:  (0.50, 0.36, 0.20),
-    STONE: (0.55, 0.55, 0.58),
+# Which texture atlas tile each block uses, per face group. 'sides' covers
+# front/back/left/right — only grass currently needs different textures per
+# face (green top, dirt-with-overhang sides, plain dirt underneath); dirt
+# and stone just use the same tile everywhere.
+BLOCK_FACE_TEXTURES = {
+    GRASS: {'top': 'grass_top', 'bottom': 'dirt',  'sides': 'grass_side'},
+    DIRT:  {'top': 'dirt',      'bottom': 'dirt',  'sides': 'dirt'},
+    STONE: {'top': 'stone',     'bottom': 'stone', 'sides': 'stone'},
 }
+
+# UV coordinates for each face's 4 corners, in the SAME order as that face's
+# position corners above — (0,0) bottom-left, (1,0) bottom-right, (1,1)
+# top-right, (0,1) top-left. This alignment matters: get it wrong and a
+# directional texture (like grass_side's overhang) would render sideways or
+# upside down on some faces even though a plain noisy texture would still
+# look fine by coincidence.
+FACE_UV = [(0, 0), (1, 0), (1, 1), (0, 1)]
 
 # For each of the 6 directions a face can point: (offset to the neighbor
 # block, and the 4 corner points of that face in counter-clockwise order as
@@ -34,14 +45,19 @@ FACES = {
     'back':   ((0, 0, -1), [(1, 0, 0), (0, 0, 0), (0, 1, 0), (1, 1, 0)]),
 }
 
-# Fake directional lighting: with no texture atlas yet, every top face of
-# every grass block is the exact same flat green, so two grass blocks that
-# happen to be at the same height are visually indistinguishable from one
-# another — there's nothing to tell you where one cube ends and the next
-# begins. Multiplying each face by a fixed brightness per direction (top
-# brightest, like sunlight from directly above, sides dimmer, bottom
-# darkest) is the classic cheap trick voxel engines use to make individual
-# blocks and height changes readable without any lighting engine at all.
+# Which face group ('top' / 'bottom' / 'sides') each named face belongs to.
+FACE_GROUP = {
+    'top': 'top', 'bottom': 'bottom',
+    'front': 'sides', 'back': 'sides', 'left': 'sides', 'right': 'sides',
+}
+
+# Fake directional lighting: real textures now do most of the work
+# distinguishing blocks, but height changes (a step up or down between two
+# same-type blocks) can still disappear without SOME per-face brightness
+# difference, since a flat top-down light gives every top face identical
+# lighting regardless of height. Multiplying each face by a fixed brightness
+# per direction (top brightest, sides dimmer, bottom darkest) is the classic
+# cheap trick voxel engines use for this without an actual lighting engine.
 FACE_SHADE = {
     'top':    1.00,
     'front':  0.85,
@@ -143,7 +159,7 @@ class Chunk:
         return self.get_block(lx, ly, lz, chunk_manager) != AIR
 
     # -------------------------------------------------------------------------
-    def build_mesh(self, ctx, shader_program, chunk_manager):
+    def build_mesh(self, ctx, shader_program, chunk_manager, texture_manager):
         self.ctx            = ctx
         self.shader_program = shader_program
 
@@ -158,27 +174,24 @@ class Chunk:
                     if block == AIR:
                         continue
 
-                    base_color = BLOCK_COLORS[block]
-
-                    # A tiny alternating tint per block column (like a
-                    # checkerboard) — on top of the directional shading
-                    # below, this is what makes a flat field of same-height,
-                    # same-type blocks still read as individual cubes instead
-                    # of one solid painted surface.
-                    world_x = self.chunk_x * CHUNK_SIZE + lx
-                    world_z = self.chunk_z * CHUNK_SIZE + lz
-                    tint = 1.06 if (world_x + world_z) % 2 == 0 else 0.94
+                    face_textures = BLOCK_FACE_TEXTURES[block]
 
                     for face_name, (offset, corners) in FACES.items():
                         nx, ny, nz = lx + offset[0], ly + offset[1], lz + offset[2]
                         if self.is_solid(nx, ny, nz, chunk_manager):
                             continue   # hidden face — a neighbor block covers it
 
-                        shade = FACE_SHADE[face_name] * tint
-                        color = tuple(min(1.0, c * shade) for c in base_color)
+                        tile_name    = face_textures[FACE_GROUP[face_name]]
+                        u_min, u_max = texture_manager.get_uv_rect(tile_name)
+                        shade        = FACE_SHADE[face_name]
 
-                        for cx, cy, cz in corners:
-                            vertices.extend([lx + cx, ly + cy, lz + cz, *color])
+                        for (cx, cy, cz), (u, v) in zip(corners, FACE_UV):
+                            # u is 0..1 within just this ONE tile — remap it
+                            # into that tile's slice of the shared atlas.
+                            atlas_u = u_min + u * (u_max - u_min)
+                            vertices.extend([
+                                lx + cx, ly + cy, lz + cz, atlas_u, v, shade
+                            ])
 
                         # two triangles per face, using this face's 4 verts
                         indices.extend([
@@ -198,7 +211,7 @@ class Chunk:
 
         self.vao = self.ctx.vertex_array(
             self.shader_program,
-            [(vbo, '3f 3f', 'in_position', 'in_color')],
+            [(vbo, '3f 2f 1f', 'in_position', 'in_uv', 'in_shade')],
             ebo
         )
 

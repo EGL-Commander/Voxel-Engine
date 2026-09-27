@@ -11,9 +11,10 @@ from world.world_generator import WorldGenerator
 
 
 class ChunkManager:
-    def __init__(self, ctx, shader_program, center_world_x = 0, center_world_z = 0):
+    def __init__(self, ctx, shader_program, texture_manager, center_world_x = 0, center_world_z = 0):
         self.ctx             = ctx
         self.shader_program  = shader_program
+        self.texture_manager = texture_manager
         self.world_generator = WorldGenerator()
 
         self.chunks = {}   # (chunk_x, chunk_z) -> Chunk
@@ -47,7 +48,7 @@ class ChunkManager:
 
         # Pass 2: now build every chunk's mesh, with the full picture available.
         for chunk in self.chunks.values():
-            chunk.build_mesh(self.ctx, self.shader_program, self)
+            chunk.build_mesh(self.ctx, self.shader_program, self, self.texture_manager)
 
     # -------------------------------------------------------------------------
     def update(self, player_world_x, player_world_z):
@@ -90,7 +91,7 @@ class ChunkManager:
         # data exists (some of those neighbors are pre-existing chunks we
         # kept, some are other chunks from this same batch).
         for chunk in new_chunks.values():
-            chunk.build_mesh(self.ctx, self.shader_program, self)
+            chunk.build_mesh(self.ctx, self.shader_program, self, self.texture_manager)
 
         # A chunk we KEPT that happens to border a newly-loaded chunk was
         # previously culling its edge faces against "nothing" (treated as
@@ -108,7 +109,7 @@ class ChunkManager:
         for coord in to_remesh:
             chunk = self.chunks[coord]
             chunk.destroy()
-            chunk.build_mesh(self.ctx, self.shader_program, self)
+            chunk.build_mesh(self.ctx, self.shader_program, self, self.texture_manager)
 
     # -------------------------------------------------------------------------
     def get_block_world(self, world_x, world_y, world_z):
@@ -163,7 +164,7 @@ class ChunkManager:
             chunk = self.chunks.get((chunk_x + dx, chunk_z + dz))
             if chunk is not None:
                 chunk.destroy()   # release the old VAO/VBO before rebuilding
-                chunk.build_mesh(self.ctx, self.shader_program, self)
+                chunk.build_mesh(self.ctx, self.shader_program, self, self.texture_manager)
 
     # -------------------------------------------------------------------------
     def render(self, m_model_uniform):

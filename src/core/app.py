@@ -14,9 +14,10 @@ from player.input_handler import InputHandler
 from player.raycaster import raycast
 from player.physics import block_intersects_box
 from rendering.shader import ShaderProgram
+from rendering.texture_manager import TextureManager
 from rendering.crosshair import Crosshair
 from world.chunk_manager import ChunkManager
-from world.chunk import AIR, GRASS, DIRT, STONE, BLOCK_COLORS
+from world.chunk import AIR, GRASS, DIRT, STONE
 
 # Hotbar: number key -> block type it places. Just 3 slots for now, matching
 # the 3 block types that currently exist — extend this dict as new block
@@ -27,6 +28,15 @@ HOTBAR = {
     pygame.K_3: STONE,
 }
 
+# The crosshair is a flat-color UI element (see ui.vert/ui.frag), so it needs
+# its own plain RGB per block type — separate from the texture atlas, which
+# is what the terrain itself actually samples from.
+HOTBAR_COLORS = {
+    GRASS: (0.40, 0.75, 0.30),
+    DIRT:  (0.50, 0.36, 0.20),
+    STONE: (0.55, 0.55, 0.58),
+}
+
 
 class App(Window):
     def __init__(self):
@@ -34,14 +44,24 @@ class App(Window):
 
         self.input = InputHandler()
 
-        # Load and compile the default shader program
-        self.shader  = ShaderProgram(self.ctx)
-        self.program = self.shader.load('default')
+        # Two separate shader programs: 'terrain' samples the texture atlas
+        # with UV coords for the world, 'ui' is flat-color for screen-space
+        # overlays like the crosshair — they need different vertex data, so
+        # one shader trying to do both would need a bunch of unused inputs.
+        self.shader          = ShaderProgram(self.ctx)
+        self.terrain_program = self.shader.load('terrain')
+        self.ui_program      = self.shader.load('ui')
+        self.terrain_program['u_texture'] = 0   # texture unit 0, bound in render()
+
+        self.texture_manager = TextureManager(self.ctx)
 
         # Build the initial chunk grid centered on world origin (where the
         # player spawns) — update() will re-center this around the player
         # as they move, instead of this staying a fixed diorama forever.
-        self.chunk_manager = ChunkManager(self.ctx, self.program, center_world_x = 8, center_world_z = 8)
+        self.chunk_manager = ChunkManager(
+            self.ctx, self.terrain_program, self.texture_manager,
+            center_world_x = 8, center_world_z = 8
+        )
 
         # Spawn a few blocks above the ground at (8, 8) and let gravity drop
         # the player onto the terrain — a nice built-in proof that physics
@@ -54,7 +74,7 @@ class App(Window):
         # list — the crosshair's color doubles as the "selected block"
         # indicator until a real HUD exists.
         self.selected_block = STONE
-        self.crosshair = Crosshair(self.ctx, self.program, BLOCK_COLORS[STONE])
+        self.crosshair = Crosshair(self.ctx, self.ui_program, HOTBAR_COLORS[STONE])
 
         self.run()
 
@@ -64,7 +84,7 @@ class App(Window):
     def on_keydown(self, key):
         if key in HOTBAR:
             self.selected_block = HOTBAR[key]
-            self.crosshair.set_color(BLOCK_COLORS[self.selected_block])
+            self.crosshair.set_color(HOTBAR_COLORS[self.selected_block])
         else:
             self.input.handle_keydown(key)
 
@@ -123,23 +143,19 @@ class App(Window):
         self.chunk_manager.update(self.player.position.x, self.player.position.z)
 
         camera = self.player.camera
-        self.program['m_proj'].write(camera.m_proj)
-        self.program['m_view'].write(camera.m_view)
+        self.terrain_program['m_proj'].write(camera.m_proj)
+        self.terrain_program['m_view'].write(camera.m_view)
 
     # -------------------------------------------------------------------------
     def render(self):
         self.ctx.clear(color = BG_COLOR)
-        self.chunk_manager.render(self.program['m_model'])
 
-        # Crosshair is drawn directly in screen space, so it gets identity
-        # matrices instead of the camera's (see Crosshair's docstring), and
-        # depth testing is switched off so it always shows on top of the
-        # world no matter what's directly in front of it.
-        identity = glm.mat4()
-        self.program['m_proj'].write(identity)
-        self.program['m_view'].write(identity)
-        self.program['m_model'].write(identity)
+        self.texture_manager.use(location = 0)
+        self.chunk_manager.render(self.terrain_program['m_model'])
 
+        # Crosshair uses its own shader with no matrices at all (always
+        # drawn directly in NDC space — see ui.vert), so there's nothing to
+        # set here beyond turning depth testing off so it's always on top.
         self.ctx.disable(moderngl.DEPTH_TEST)
         self.crosshair.render()
         self.ctx.enable(moderngl.DEPTH_TEST)
@@ -147,6 +163,7 @@ class App(Window):
     # -------------------------------------------------------------------------
     def quit(self):
         self.crosshair.destroy()
+        self.texture_manager.destroy()
         self.chunk_manager.destroy()
         self.shader.destroy()
         super().quit()
