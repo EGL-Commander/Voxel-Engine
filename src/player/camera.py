@@ -52,24 +52,6 @@ class Camera:
         self.update_vectors()
 
     # -------------------------------------------------------------------------
-    def move(self, keys, dt):
-        velocity = PLAYER_SPEED * dt   # dt is milliseconds since last frame
-
-        if keys['w']:     self.position += self.forward * velocity
-        if keys['s']:     self.position -= self.forward * velocity
-        if keys['a']:     self.position -= self.right   * velocity
-        if keys['d']:     self.position += self.right   * velocity
-        if keys['space']: self.position += glm.vec3(0, 1, 0) * velocity
-        if keys['shift']: self.position -= glm.vec3(0, 1, 0) * velocity
-
-    # -------------------------------------------------------------------------
-    def update(self, keys, mouse_dx, mouse_dy, dt):
-        """Called once per frame from App.update()."""
-        self.rotate(mouse_dx, mouse_dy)
-        self.move(keys, dt)
-        self.m_view = self.get_view_matrix()
-
-    # -------------------------------------------------------------------------
     def get_view_matrix(self):
         return glm.lookAt(self.position, self.position + self.forward, self.up)
 

@@ -1,8 +1,8 @@
 # =============================================================================
 # CHUNK — A 16x16x16 grid of blocks. Builds its own mesh, but only from the
 # faces that are actually visible (a face touching another solid block is
-# skipped entirely). This one change is what makes rendering a whole world
-# of cubes possible — without it we'd be drawing millions of hidden faces.
+# skipped entirely) — including faces that touch a NEIGHBORING chunk, which
+# is why chunk generation now happens in two passes (see ChunkManager).
 # =============================================================================
 
 import numpy as np
@@ -53,14 +53,19 @@ FACE_SHADE = {
 
 
 class Chunk:
-    def __init__(self, ctx, shader_program, chunk_x, chunk_z, world_generator):
-        self.ctx             = ctx
-        self.shader_program  = shader_program
-        self.chunk_x         = chunk_x     # chunk grid coordinates, NOT world coords
-        self.chunk_z         = chunk_z
+    def __init__(self, chunk_x, chunk_z, world_generator):
+        self.chunk_x = chunk_x     # chunk grid coordinates, NOT world coords
+        self.chunk_z = chunk_z
 
         self.voxels = self.generate_voxels(world_generator)
-        self.vao    = self.build_mesh()
+
+        # Mesh isn't built yet — see build_mesh(). Meshing needs to look at
+        # neighboring chunks' voxel data, so every chunk's voxels must exist
+        # first (that's why ChunkManager builds ALL chunks' voxels, THEN
+        # calls build_mesh() on each one, instead of doing both in one pass).
+        self.ctx            = None
+        self.shader_program = None
+        self.vao             = None
 
     # -------------------------------------------------------------------------
     def generate_voxels(self, world_generator):
@@ -92,21 +97,56 @@ class Chunk:
         return voxels
 
     # -------------------------------------------------------------------------
-    def is_solid(self, lx, ly, lz):
+    @staticmethod
+    def _wrap(chunk_coord, local_coord):
         """
-        True if the given LOCAL position holds a non-air block.
-        Anything outside this chunk's own bounds is treated as air for now —
-        meaning faces right at a chunk's edge get drawn even when the
-        neighboring chunk is solid there. Wastes a few triangles at chunk
-        borders but keeps this milestone simple; fixable later by looking
-        up the neighboring chunk instead of assuming air.
+        A local coordinate that steps outside 0..CHUNK_SIZE-1 has crossed
+        into a neighboring chunk. Returns (that neighbor's chunk coord, the
+        equivalent local coord inside IT). Only ever off by one in either
+        direction, since callers only step ±1 block at a time.
         """
-        if 0 <= lx < CHUNK_SIZE and 0 <= ly < CHUNK_SIZE and 0 <= lz < CHUNK_SIZE:
-            return self.voxels[lx, ly, lz] != AIR
-        return False
+        if local_coord < 0:
+            return chunk_coord - 1, local_coord + CHUNK_SIZE
+        if local_coord >= CHUNK_SIZE:
+            return chunk_coord + 1, local_coord - CHUNK_SIZE
+        return chunk_coord, local_coord
 
     # -------------------------------------------------------------------------
-    def build_mesh(self):
+    def get_block(self, lx, ly, lz, chunk_manager):
+        """
+        Block ID at a LOCAL position, reaching into a neighboring chunk when
+        that position falls outside this chunk's own 0..15 bounds.
+        """
+        # Vertical bounds aren't chunk-to-chunk — there's only one chunk of
+        # height right now. Treat "below the world" as solid stone (so we
+        # never bother drawing the floor's underside) and "above the world"
+        # as open air (so the top of the tallest hill is never sealed shut).
+        if ly < 0:
+            return STONE
+        if ly >= CHUNK_SIZE:
+            return AIR
+
+        if 0 <= lx < CHUNK_SIZE and 0 <= lz < CHUNK_SIZE:
+            return self.voxels[lx, ly, lz]
+
+        neighbor_cx, nlx = self._wrap(self.chunk_x, lx)
+        neighbor_cz, nlz = self._wrap(self.chunk_z, lz)
+        neighbor = chunk_manager.chunks.get((neighbor_cx, neighbor_cz))
+
+        if neighbor is None:
+            return AIR   # past the edge of the currently loaded world
+
+        return neighbor.voxels[nlx, ly, nlz]
+
+    # -------------------------------------------------------------------------
+    def is_solid(self, lx, ly, lz, chunk_manager):
+        return self.get_block(lx, ly, lz, chunk_manager) != AIR
+
+    # -------------------------------------------------------------------------
+    def build_mesh(self, ctx, shader_program, chunk_manager):
+        self.ctx            = ctx
+        self.shader_program = shader_program
+
         vertices = []
         indices  = []
         next_index = 0
@@ -131,7 +171,7 @@ class Chunk:
 
                     for face_name, (offset, corners) in FACES.items():
                         nx, ny, nz = lx + offset[0], ly + offset[1], lz + offset[2]
-                        if self.is_solid(nx, ny, nz):
+                        if self.is_solid(nx, ny, nz, chunk_manager):
                             continue   # hidden face — a neighbor block covers it
 
                         shade = FACE_SHADE[face_name] * tint
@@ -148,7 +188,7 @@ class Chunk:
                         next_index += 4
 
         if not vertices:
-            return None   # an all-air chunk has nothing to draw
+            return   # an all-air chunk has nothing to draw — self.vao stays None
 
         vertices = np.array(vertices, dtype = 'f4')
         indices  = np.array(indices,  dtype = 'i4')
@@ -156,7 +196,7 @@ class Chunk:
         vbo = self.ctx.buffer(vertices)
         ebo = self.ctx.buffer(indices)
 
-        return self.ctx.vertex_array(
+        self.vao = self.ctx.vertex_array(
             self.shader_program,
             [(vbo, '3f 3f', 'in_position', 'in_color')],
             ebo

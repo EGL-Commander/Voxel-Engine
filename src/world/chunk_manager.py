@@ -5,7 +5,7 @@
 
 import glm
 from core.settings import *
-from world.chunk import Chunk
+from world.chunk import Chunk, AIR, STONE, CHUNK_SIZE
 from world.world_generator import WorldGenerator
 
 
@@ -26,11 +26,40 @@ class ChunkManager:
         around the player as they move instead of generating everything once.
         """
         r = RENDER_DISTANCE
+
+        # Pass 1: every chunk's VOXEL DATA, with no mesh yet. Meshing needs
+        # to check neighboring chunks' blocks (to know whether a face at the
+        # chunk's edge is actually hidden), so all of that data has to exist
+        # before any chunk is allowed to start building its mesh.
         for cx in range(-r, r + 1):
             for cz in range(-r, r + 1):
-                self.chunks[(cx, cz)] = Chunk(
-                    self.ctx, self.shader_program, cx, cz, self.world_generator
-                )
+                self.chunks[(cx, cz)] = Chunk(cx, cz, self.world_generator)
+
+        # Pass 2: now build every chunk's mesh, with the full picture available.
+        for chunk in self.chunks.values():
+            chunk.build_mesh(self.ctx, self.shader_program, self)
+
+    # -------------------------------------------------------------------------
+    def get_block_world(self, world_x, world_y, world_z):
+        """
+        Block ID at WORLD coordinates (not local to any one chunk) — used by
+        player physics for collision checks. Floor-divides down to which
+        chunk owns that position, same vertical rules as Chunk.get_block:
+        solid below the world, open air above it.
+        """
+        if world_y < 0:
+            return STONE
+        if world_y >= CHUNK_SIZE:
+            return AIR
+
+        chunk_x, local_x = divmod(world_x, CHUNK_SIZE)
+        chunk_z, local_z = divmod(world_z, CHUNK_SIZE)
+
+        chunk = self.chunks.get((chunk_x, chunk_z))
+        if chunk is None:
+            return AIR   # outside the currently loaded world
+
+        return chunk.voxels[local_x, world_y, local_z]
 
     # -------------------------------------------------------------------------
     def render(self, m_model_uniform):
