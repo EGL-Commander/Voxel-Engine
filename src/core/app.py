@@ -38,9 +38,10 @@ class App(Window):
         self.shader  = ShaderProgram(self.ctx)
         self.program = self.shader.load('default')
 
-        # Build every chunk in the render-distance grid, each with its own
-        # voxel data (from WorldGenerator) and its own face-culled mesh.
-        self.chunk_manager = ChunkManager(self.ctx, self.program)
+        # Build the initial chunk grid centered on world origin (where the
+        # player spawns) — update() will re-center this around the player
+        # as they move, instead of this staying a fixed diorama forever.
+        self.chunk_manager = ChunkManager(self.ctx, self.program, center_world_x = 8, center_world_z = 8)
 
         # Spawn a few blocks above the ground at (8, 8) and let gravity drop
         # the player onto the terrain — a nice built-in proof that physics
@@ -119,6 +120,7 @@ class App(Window):
         self.player.update(
             self.input.keys, self.input.mouse_dx, self.input.mouse_dy, dt
         )
+        self.chunk_manager.update(self.player.position.x, self.player.position.z)
 
         camera = self.player.camera
         self.program['m_proj'].write(camera.m_proj)

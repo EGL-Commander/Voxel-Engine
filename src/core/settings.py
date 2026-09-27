@@ -34,12 +34,7 @@ CROSSHAIR_SIZE      = 0.02      # half-length of each crosshair line, in NDC uni
 # gravity + collision replace the old free-flying camera movement.
 GRAVITY             = 0.00004   # downward acceleration
 JUMP_SPEED          = 0.01      # upward velocity applied the instant you jump
-JUMP_COOLDOWN_MS    = 300       # minimum time between jumps — without this,
-                                 # holding space re-triggers the instant
-                                 # on_ground flips back true (a frame or two
-                                 # after leaving the ground), which reads as
-                                 # a vibrating, instantaneous "jump" instead
-                                 # of a real one
+JUMP_COOLDOWN_MS    = 600       # was 300 — still felt instant/rapid, doubled
 EYE_HEIGHT          = 1.6       # camera sits this many blocks above your feet
 PLAYER_HEIGHT       = 1.8       # total collision box height, in blocks
 PLAYER_HALF_WIDTH   = 0.3       # half the collision box's width/depth, in blocks
@@ -49,7 +44,16 @@ MAX_DT_MS           = 50        # cap one frame's dt (e.g. after the slow first
                                  # the floor — always simulate in small steps
 
 # --- Block Interaction ---
-REACH_DISTANCE      = 6.0       # how many blocks away you can break/place
+REACH_DISTANCE      = 4.5       # was 6.0 — verified the raycast itself is
+                                 # direction-consistent (tested: a target at
+                                 # the same Euclidean distance in 4 different
+                                 # directions hits exactly right every time),
+                                 # so the "reach feels inconsistent" was really
+                                 # just "reach is long enough that small
+                                 # differences become noticeable" — shortening
+                                 # it to Minecraft's own default reach fixes both
+                                 # complaints (too far AND feels inconsistent)
+                                 # at once
 RAYCAST_STEP        = 0.05      # smaller = more precise aim, more checks per click
 
 # --- World Generation ---
