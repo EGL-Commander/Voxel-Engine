@@ -25,12 +25,21 @@ FOV                 = 50        # field of view in degrees
 NEAR_PLANE          = 0.1       # closest distance camera renders
 FAR_PLANE           = 2000.0    # furthest distance camera renders
 
+# --- HUD ---
+CROSSHAIR_SIZE      = 0.02      # half-length of each crosshair line, in NDC units
+
 # --- Physics ---
 # All in blocks per millisecond (or per ms^2 for gravity) since dt comes from
 # pygame's clock in milliseconds. Space is now a jump instead of fly-up;
 # gravity + collision replace the old free-flying camera movement.
 GRAVITY             = 0.00004   # downward acceleration
 JUMP_SPEED          = 0.01      # upward velocity applied the instant you jump
+JUMP_COOLDOWN_MS    = 300       # minimum time between jumps — without this,
+                                 # holding space re-triggers the instant
+                                 # on_ground flips back true (a frame or two
+                                 # after leaving the ground), which reads as
+                                 # a vibrating, instantaneous "jump" instead
+                                 # of a real one
 EYE_HEIGHT          = 1.6       # camera sits this many blocks above your feet
 PLAYER_HEIGHT       = 1.8       # total collision box height, in blocks
 PLAYER_HALF_WIDTH   = 0.3       # half the collision box's width/depth, in blocks

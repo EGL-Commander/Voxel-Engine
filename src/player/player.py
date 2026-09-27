@@ -20,6 +20,9 @@ class Player:
         self.velocity_y = 0.0
         self.on_ground  = False
 
+        # Starts "ready" (>= cooldown) so the very first jump isn't delayed.
+        self.time_since_jump = JUMP_COOLDOWN_MS
+
         self.camera = Camera(position = self._eye_position(), yaw = -90, pitch = -10)
 
     # -------------------------------------------------------------------------
@@ -50,10 +53,16 @@ class Player:
         if glm.length(move) > 0:
             move = glm.normalize(move) * speed
 
-        # Gravity always pulls down; jumping only works while on the ground.
+        # Gravity always pulls down; jumping only works while on the ground
+        # AND the cooldown has elapsed — without the cooldown, on_ground
+        # flips back to True a frame or two after leaving the ground (while
+        # you're still holding space), so it'd refire instantly instead of
+        # feeling like one real jump.
         self.velocity_y -= GRAVITY * dt
-        if keys['space'] and self.on_ground:
+        self.time_since_jump += dt
+        if keys['space'] and self.on_ground and self.time_since_jump >= JUMP_COOLDOWN_MS:
             self.velocity_y = JUMP_SPEED
+            self.time_since_jump = 0
         move.y = self.velocity_y * dt
 
         self.on_ground = move_and_collide(

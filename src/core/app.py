@@ -14,8 +14,18 @@ from player.input_handler import InputHandler
 from player.raycaster import raycast
 from player.physics import block_intersects_box
 from rendering.shader import ShaderProgram
+from rendering.crosshair import Crosshair
 from world.chunk_manager import ChunkManager
-from world.chunk import AIR, STONE
+from world.chunk import AIR, GRASS, DIRT, STONE, BLOCK_COLORS
+
+# Hotbar: number key -> block type it places. Just 3 slots for now, matching
+# the 3 block types that currently exist — extend this dict as new block
+# types get added.
+HOTBAR = {
+    pygame.K_1: GRASS,
+    pygame.K_2: DIRT,
+    pygame.K_3: STONE,
+}
 
 
 class App(Window):
@@ -39,13 +49,23 @@ class App(Window):
         spawn = (8, ground_height + 5, 8)
         self.player = Player(self.chunk_manager, spawn)
 
+        # No text/font rendering exists yet, so there's no on-screen hotbar
+        # list — the crosshair's color doubles as the "selected block"
+        # indicator until a real HUD exists.
+        self.selected_block = STONE
+        self.crosshair = Crosshair(self.ctx, self.program, BLOCK_COLORS[STONE])
+
         self.run()
 
     # -------------------------------------------------------------------------
     # Window calls these when it sees KEYDOWN/KEYUP/MOUSEBUTTONDOWN events
     # (see window.py)
     def on_keydown(self, key):
-        self.input.handle_keydown(key)
+        if key in HOTBAR:
+            self.selected_block = HOTBAR[key]
+            self.crosshair.set_color(BLOCK_COLORS[self.selected_block])
+        else:
+            self.input.handle_keydown(key)
 
     def on_keyup(self, key):
         self.input.handle_keyup(key)
@@ -79,7 +99,7 @@ class App(Window):
         ):
             return
 
-        self.chunk_manager.set_block(*place_block, STONE)
+        self.chunk_manager.set_block(*place_block, self.selected_block)
 
     # -------------------------------------------------------------------------
     def run(self):
@@ -109,8 +129,22 @@ class App(Window):
         self.ctx.clear(color = BG_COLOR)
         self.chunk_manager.render(self.program['m_model'])
 
+        # Crosshair is drawn directly in screen space, so it gets identity
+        # matrices instead of the camera's (see Crosshair's docstring), and
+        # depth testing is switched off so it always shows on top of the
+        # world no matter what's directly in front of it.
+        identity = glm.mat4()
+        self.program['m_proj'].write(identity)
+        self.program['m_view'].write(identity)
+        self.program['m_model'].write(identity)
+
+        self.ctx.disable(moderngl.DEPTH_TEST)
+        self.crosshair.render()
+        self.ctx.enable(moderngl.DEPTH_TEST)
+
     # -------------------------------------------------------------------------
     def quit(self):
+        self.crosshair.destroy()
         self.chunk_manager.destroy()
         self.shader.destroy()
         super().quit()
