@@ -62,6 +62,39 @@ class ChunkManager:
         return chunk.voxels[local_x, world_y, local_z]
 
     # -------------------------------------------------------------------------
+    def set_block(self, world_x, world_y, world_z, block_id):
+        """
+        Changes one block at WORLD coordinates (breaking = AIR, placing =
+        whatever block type) and rebuilds every mesh that could have been
+        affected. That's not just this chunk — if the edited block sits right
+        on a chunk's edge, the NEIGHBORING chunk's mesh was culling a face
+        against it too, so that neighbor needs to be re-meshed as well or
+        you'd see a hole (or a hidden extra face) appear at the seam.
+        Returns True if the edit happened, False if it was out of bounds.
+        """
+        if world_y < 0 or world_y >= CHUNK_SIZE:
+            return False   # can't edit the "floor" or above the build limit
+
+        chunk_x, local_x = divmod(world_x, CHUNK_SIZE)
+        chunk_z, local_z = divmod(world_z, CHUNK_SIZE)
+
+        chunk = self.chunks.get((chunk_x, chunk_z))
+        if chunk is None:
+            return False   # outside the currently loaded world
+
+        chunk.voxels[local_x, world_y, local_z] = block_id
+        self._remesh_around(chunk_x, chunk_z)
+        return True
+
+    # -------------------------------------------------------------------------
+    def _remesh_around(self, chunk_x, chunk_z):
+        for dx, dz in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]:
+            chunk = self.chunks.get((chunk_x + dx, chunk_z + dz))
+            if chunk is not None:
+                chunk.destroy()   # release the old VAO/VBO before rebuilding
+                chunk.build_mesh(self.ctx, self.shader_program, self)
+
+    # -------------------------------------------------------------------------
     def render(self, m_model_uniform):
         """
         Each chunk's mesh is built in LOCAL coordinates (0-16), so we position

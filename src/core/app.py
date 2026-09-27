@@ -11,8 +11,11 @@ from core.window import Window
 from core.settings import *
 from player.player import Player
 from player.input_handler import InputHandler
+from player.raycaster import raycast
+from player.physics import block_intersects_box
 from rendering.shader import ShaderProgram
 from world.chunk_manager import ChunkManager
+from world.chunk import AIR, STONE
 
 
 class App(Window):
@@ -39,12 +42,44 @@ class App(Window):
         self.run()
 
     # -------------------------------------------------------------------------
-    # Window calls these when it sees KEYDOWN/KEYUP events (see window.py)
+    # Window calls these when it sees KEYDOWN/KEYUP/MOUSEBUTTONDOWN events
+    # (see window.py)
     def on_keydown(self, key):
         self.input.handle_keydown(key)
 
     def on_keyup(self, key):
         self.input.handle_keyup(key)
+
+    def on_mousedown(self, button):
+        if button == 1:      # left click — break the block you're looking at
+            self.break_block()
+        elif button == 3:    # right click — place one against its face
+            self.place_block()
+
+    # -------------------------------------------------------------------------
+    def break_block(self):
+        hit_block, _ = raycast(
+            self.chunk_manager, self.player.camera.position, self.player.camera.forward
+        )
+        if hit_block is not None:
+            self.chunk_manager.set_block(*hit_block, AIR)
+
+    # -------------------------------------------------------------------------
+    def place_block(self):
+        _, place_block = raycast(
+            self.chunk_manager, self.player.camera.position, self.player.camera.forward
+        )
+        if place_block is None:
+            return
+
+        # Don't let the player wedge a block into their own body — that
+        # would trap them inside solid geometry with no way to move out.
+        if block_intersects_box(
+            self.player.position, PLAYER_HALF_WIDTH, PLAYER_HEIGHT, place_block
+        ):
+            return
+
+        self.chunk_manager.set_block(*place_block, STONE)
 
     # -------------------------------------------------------------------------
     def run(self):

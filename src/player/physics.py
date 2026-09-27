@@ -67,3 +67,16 @@ def move_and_collide(chunk_manager, position, delta, half_width, height):
             position.y = math.floor(position.y + height) - height
 
     return on_ground
+
+
+def block_intersects_box(position, half_width, height, block_pos):
+    """
+    True if the unit-cube block at block_pos overlaps the player's box —
+    used before placing a block so you can't place one inside your own body.
+    """
+    bx, by, bz = block_pos
+    return (
+        position.x + half_width > bx      and position.x - half_width < bx + 1 and
+        position.y + height     > by      and position.y              < by + 1 and
+        position.z + half_width > bz      and position.z - half_width < bz + 1
+    )

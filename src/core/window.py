@@ -64,6 +64,8 @@ class Window:
                     self.on_keydown(event.key)
             elif event.type == pygame.KEYUP:
                 self.on_keyup(event.key)
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                self.on_mousedown(event.button)
 
     # -------------------------------------------------------------------------
     # Hooks for subclasses (App) that care about individual key presses.
@@ -72,6 +74,9 @@ class Window:
         pass
 
     def on_keyup(self, key):
+        pass
+
+    def on_mousedown(self, button):
         pass
 
     # -------------------------------------------------------------------------

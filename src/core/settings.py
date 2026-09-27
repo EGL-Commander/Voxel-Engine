@@ -39,6 +39,10 @@ MAX_DT_MS           = 50        # cap one frame's dt (e.g. after the slow first
                                  # takes one giant catch-up step and falls through
                                  # the floor — always simulate in small steps
 
+# --- Block Interaction ---
+REACH_DISTANCE      = 6.0       # how many blocks away you can break/place
+RAYCAST_STEP        = 0.05      # smaller = more precise aim, more checks per click
+
 # --- World Generation ---
 WORLD_SEED           = 42       # change this to get a different-looking world
 NOISE_SCALE          = 0.08     # smaller = smoother, larger = spikier terrain
