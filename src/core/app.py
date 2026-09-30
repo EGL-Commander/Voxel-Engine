@@ -17,15 +17,18 @@ from rendering.shader import ShaderProgram
 from rendering.texture_manager import TextureManager
 from rendering.crosshair import Crosshair
 from world.chunk_manager import ChunkManager
-from world.chunk import AIR, GRASS, DIRT, STONE
+from world.world_generator import WorldGenerator
+from world.chunk import AIR, GRASS, DIRT, STONE, SAND, SNOW, BLOCK_NAMES
+from rendering.hud import HUD
 
-# Hotbar: number key -> block type it places. Just 3 slots for now, matching
-# the 3 block types that currently exist — extend this dict as new block
-# types get added.
+# Hotbar: number key -> block type it places. Extend this dict (and
+# HOTBAR_COLORS below) as new block types get added.
 HOTBAR = {
     pygame.K_1: GRASS,
     pygame.K_2: DIRT,
     pygame.K_3: STONE,
+    pygame.K_4: SAND,
+    pygame.K_5: SNOW,
 }
 
 # The crosshair is a flat-color UI element (see ui.vert/ui.frag), so it needs
@@ -35,6 +38,8 @@ HOTBAR_COLORS = {
     GRASS: (0.40, 0.75, 0.30),
     DIRT:  (0.50, 0.36, 0.20),
     STONE: (0.55, 0.55, 0.58),
+    SAND:  (0.86, 0.80, 0.59),
+    SNOW:  (0.94, 0.96, 0.97),
 }
 
 
@@ -51,23 +56,26 @@ class App(Window):
         self.shader          = ShaderProgram(self.ctx)
         self.terrain_program = self.shader.load('terrain')
         self.ui_program      = self.shader.load('ui')
+        self.hud_program     = self.shader.load('hud')
         self.terrain_program['u_texture'] = 0   # texture unit 0, bound in render()
+        self.hud_program['u_texture']     = 0
 
         self.texture_manager = TextureManager(self.ctx)
 
-        # Build the initial chunk grid centered on world origin (where the
-        # player spawns) — update() will re-center this around the player
-        # as they move, instead of this staying a fixed diorama forever.
+        # Pick a spawn column first (on plains, away from any biome border),
+        # then build the initial chunk grid around it — update() re-centers
+        # the grid on the player as they move after that.
+        spawn_x, spawn_z = WorldGenerator().find_spawn_column()
         self.chunk_manager = ChunkManager(
             self.ctx, self.terrain_program, self.texture_manager,
-            center_world_x = 8, center_world_z = 8
+            center_world_x = spawn_x, center_world_z = spawn_z
         )
 
-        # Spawn a few blocks above the ground at (8, 8) and let gravity drop
-        # the player onto the terrain — a nice built-in proof that physics
-        # is actually running, not just decorative code.
-        ground_height = self.chunk_manager.world_generator.get_height(8, 8)
-        spawn = (8, ground_height + 5, 8)
+        # Spawn a few blocks above the ground and let gravity drop the
+        # player onto the terrain — a nice built-in proof that physics is
+        # actually running, not just decorative code.
+        ground_height = self.chunk_manager.world_generator.get_height(spawn_x, spawn_z)
+        spawn = (spawn_x + 0.5, ground_height + 5, spawn_z + 0.5)
         self.player = Player(self.chunk_manager, spawn)
 
         # No text/font rendering exists yet, so there's no on-screen hotbar
@@ -75,6 +83,13 @@ class App(Window):
         # indicator until a real HUD exists.
         self.selected_block = STONE
         self.crosshair = Crosshair(self.ctx, self.ui_program, HOTBAR_COLORS[STONE])
+
+        # Debug HUD: position/biome/looking-at/fps, toggled with F3. F4 looks
+        # for the nearest cave and shows how far away it is, since caves have
+        # no other way to be found short of digging blind.
+        self.hud         = HUD(self.ctx, self.hud_program)
+        self.hud_visible = True
+        self.cave_target = None
 
         self.run()
 
@@ -85,8 +100,19 @@ class App(Window):
         if key in HOTBAR:
             self.selected_block = HOTBAR[key]
             self.crosshair.set_color(HOTBAR_COLORS[self.selected_block])
+        elif key == pygame.K_F3:
+            self.hud_visible = not self.hud_visible
+        elif key == pygame.K_F4:
+            self.find_nearest_cave()
         else:
             self.input.handle_keydown(key)
+
+    # -------------------------------------------------------------------------
+    def find_nearest_cave(self):
+        p = self.player.position
+        self.cave_target = self.chunk_manager.world_generator.find_cave_spot(
+            int(p.x), int(p.z)
+        )
 
     def on_keyup(self, key):
         self.input.handle_keyup(key)
@@ -123,6 +149,40 @@ class App(Window):
         self.chunk_manager.set_block(*place_block, self.selected_block)
 
     # -------------------------------------------------------------------------
+    def hud_lines(self):
+        p      = self.player.position
+        camera = self.player.camera
+        biome  = self.chunk_manager.world_generator.get_biome(int(p.x), int(p.z))
+
+        lines = [
+            f"seed {WORLD_SEED}    fps {self.clock.get_fps():.0f}",
+            f"pos {p.x:.1f}, {p.y:.1f}, {p.z:.1f}   biome {biome}",
+            f"yaw {camera.yaw:.0f}  pitch {camera.pitch:.0f}   "
+            f"chunks {len(self.chunk_manager.chunks)}",
+        ]
+
+        hit_block, _ = raycast(self.chunk_manager, camera.position, camera.forward)
+        if hit_block is not None:
+            block_id = self.chunk_manager.get_block_world(*hit_block)
+            lines.append(f"looking at: {BLOCK_NAMES[block_id]} {hit_block}")
+        else:
+            lines.append("looking at: (nothing in reach)")
+
+        lines.append(f"selected: {BLOCK_NAMES[self.selected_block]}  (keys 1-5)")
+
+        if self.cave_target is not None:
+            tx, ty, tz = self.cave_target
+            lines.append(
+                f"nearest cave: {tx - p.x:+.0f}, {ty - p.y:+.0f}, {tz - p.z:+.0f} "
+                f"blocks away"
+            )
+        else:
+            lines.append("F4: find nearest cave")
+
+        lines.append("F3: toggle this display")
+        return lines
+
+    # -------------------------------------------------------------------------
     def run(self):
         while True:
             dt = self.clock.tick(60)   # milliseconds since the last frame
@@ -146,6 +206,9 @@ class App(Window):
         self.terrain_program['m_proj'].write(camera.m_proj)
         self.terrain_program['m_view'].write(camera.m_view)
 
+        if self.hud_visible:
+            self.hud.update(dt, self.hud_lines)
+
     # -------------------------------------------------------------------------
     def render(self):
         self.ctx.clear(color = BG_COLOR)
@@ -158,10 +221,13 @@ class App(Window):
         # set here beyond turning depth testing off so it's always on top.
         self.ctx.disable(moderngl.DEPTH_TEST)
         self.crosshair.render()
+        if self.hud_visible:
+            self.hud.render()
         self.ctx.enable(moderngl.DEPTH_TEST)
 
     # -------------------------------------------------------------------------
     def quit(self):
+        self.hud.destroy()
         self.crosshair.destroy()
         self.texture_manager.destroy()
         self.chunk_manager.destroy()

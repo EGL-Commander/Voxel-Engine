@@ -27,6 +27,8 @@ FAR_PLANE           = 2000.0    # furthest distance camera renders
 
 # --- HUD ---
 CROSSHAIR_SIZE      = 0.02      # half-length of each crosshair line, in NDC units
+HUD_FONT_SIZE       = 22        # debug text size, in pixels
+HUD_UPDATE_MS       = 100       # how often the debug text is re-rendered
 
 # --- Physics ---
 # All in blocks per millisecond (or per ms^2 for gravity) since dt comes from
@@ -62,6 +64,30 @@ NOISE_SCALE          = 0.08     # smaller = smoother, larger = spikier terrain
 NOISE_OCTAVES        = 3        # layers of detail in the noise
 TERRAIN_BASE_HEIGHT  = 6        # average ground height (in blocks, 0-15)
 TERRAIN_AMPLITUDE    = 4        # how far hills rise/fall from the base height
+
+# --- Biomes ---
+BIOME_SCALE          = 0.012    # much smaller than NOISE_SCALE = big regions
+BIOME_DESERT_MAX     = -0.12    # biome noise below this -> desert
+BIOME_SNOW_MIN       = 0.12     # biome noise above this -> snow (between = plains)
+
+# --- Caves ---
+CAVE_NOISE_SCALE     = 0.08     # smaller = larger, smoother caverns
+CAVE_THRESHOLD       = 0.35     # was 0.3 — tested (flood-fill analysis): 0.3
+                                 # produced caverns over 400 voxels large in
+                                 # places (looked like vast open rooms, and
+                                 # large enough in one case to see clear
+                                 # through gaps to the unrendered void below
+                                 # the world). 0.35 keeps density reasonable
+                                 # (~1.8% of stone) while keeping the largest
+                                 # connected caverns closer to 20-30 voxels —
+                                 # modest pockets/tunnels instead of rooms
+CAVE_MIN_Y           = 2        # never carve below this height — guarantees a
+                                 # solid floor at the world's bottom, so a cave
+                                 # can never open straight through into the
+                                 # unrendered void below y=0 (that gap has no
+                                 # actual mesh, just an implicit "solid" for
+                                 # collision, so without this buffer you could
+                                 # see clean through to background sky)
 
 # --- Background color (sky) ---
 BG_COLOR            = (0.58, 0.83, 0.99)    # light blue RGB values 0.0 to 1.0

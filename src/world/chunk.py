@@ -13,6 +13,23 @@ AIR   = 0
 GRASS = 1
 DIRT  = 2
 STONE = 3
+SAND  = 4
+SNOW  = 5
+
+# Human-readable names, for the debug HUD and anywhere else text is shown.
+BLOCK_NAMES = {
+    AIR: 'air', GRASS: 'grass', DIRT: 'dirt', STONE: 'stone',
+    SAND: 'sand', SNOW: 'snow',
+}
+
+# Per biome: (surface block, filler block used for the 2 layers under it).
+# The generator only reports a biome NAME — mapping that to actual block IDs
+# lives here, since this file owns the block IDs.
+BIOME_BLOCKS = {
+    'plains': (GRASS, DIRT),
+    'desert': (SAND,  SAND),
+    'snow':   (SNOW,  DIRT),
+}
 
 # Which texture atlas tile each block uses, per face group. 'sides' covers
 # front/back/left/right — only grass currently needs different textures per
@@ -22,6 +39,8 @@ BLOCK_FACE_TEXTURES = {
     GRASS: {'top': 'grass_top', 'bottom': 'dirt',  'sides': 'grass_side'},
     DIRT:  {'top': 'dirt',      'bottom': 'dirt',  'sides': 'dirt'},
     STONE: {'top': 'stone',     'bottom': 'stone', 'sides': 'stone'},
+    SAND:  {'top': 'sand',      'bottom': 'sand',  'sides': 'sand'},
+    SNOW:  {'top': 'snow_top',  'bottom': 'dirt',  'sides': 'snow_side'},
 }
 
 # UV coordinates for each face's 4 corners, in the SAME order as that face's
@@ -87,8 +106,9 @@ class Chunk:
     def generate_voxels(self, world_generator):
         """
         Fills a CHUNK_SIZE^3 array with block IDs based on the world
-        generator's height for each (x, z) column: grass on top, a few
-        layers of dirt, stone for everything below that, air above ground.
+        generator's height for each (x, z) column: the biome's surface block
+        on top (grass / sand / snow), 2 filler layers under it, stone for
+        everything below that, air above ground.
         """
         voxels = np.zeros((CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE), dtype = np.uint8)
 
@@ -99,14 +119,25 @@ class Chunk:
                 world_x = self.chunk_x * CHUNK_SIZE + lx
                 world_z = self.chunk_z * CHUNK_SIZE + lz
                 height  = world_generator.get_height(world_x, world_z)
+                surface_block, filler_block = BIOME_BLOCKS[
+                    world_generator.get_biome(world_x, world_z)
+                ]
 
                 for ly in range(CHUNK_SIZE):
                     if ly > height:
                         voxels[lx, ly, lz] = AIR
                     elif ly == height:
-                        voxels[lx, ly, lz] = GRASS
+                        voxels[lx, ly, lz] = surface_block
                     elif ly >= height - 2:
-                        voxels[lx, ly, lz] = DIRT
+                        voxels[lx, ly, lz] = filler_block
+                    elif ly >= CAVE_MIN_Y and world_generator.is_cave(world_x, ly, world_z):
+                        # Only stone gets hollowed out — never the surface
+                        # and filler layers — so the walkable ground and
+                        # spawn point are never at risk of caving in under
+                        # the player; caves stay strictly an underground
+                        # feature you have to dig down or find an exposed
+                        # cliff face to discover.
+                        voxels[lx, ly, lz] = AIR
                     else:
                         voxels[lx, ly, lz] = STONE
 
