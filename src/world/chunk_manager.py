@@ -11,11 +11,16 @@ from world.world_generator import WorldGenerator
 
 
 class ChunkManager:
-    def __init__(self, ctx, shader_program, texture_manager, center_world_x = 0, center_world_z = 0):
+    def __init__(self, ctx, shader_program, texture_manager, center_world_x = 0, center_world_z = 0,
+                 world_generator = None):
         self.ctx             = ctx
         self.shader_program  = shader_program
         self.texture_manager = texture_manager
-        self.world_generator = WorldGenerator()
+        # Accept a shared WorldGenerator if given (so spawn search and chunk
+        # generation agree on the same seed), otherwise make our own — this
+        # matters once the seed is random: two separately-created generators
+        # would each roll their OWN random seed and disagree with each other.
+        self.world_generator = world_generator or WorldGenerator()
 
         self.chunks = {}   # (chunk_x, chunk_z) -> Chunk
 

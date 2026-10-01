@@ -59,7 +59,23 @@ REACH_DISTANCE      = 4.5       # was 6.0 — verified the raycast itself is
 RAYCAST_STEP        = 0.05      # smaller = more precise aim, more checks per click
 
 # --- World Generation ---
-WORLD_SEED           = 42       # change this to get a different-looking world
+# Leave this as None for a brand-new random world every launch (that's the
+# default). Set it to a number (e.g. 42) instead to always regenerate that
+# exact same world — handy for reproducing a bug or showing someone the
+# same terrain twice.
+WORLD_SEED = None
+
+# Resolved here, once, when settings is first imported, so every part of the
+# game (spawn search, chunk generation, ...) agrees on the same seed this
+# run. The try/except is a safety net: if the WORLD_SEED line above ever
+# gets deleted or commented out, this falls back to random instead of
+# crashing the whole game with a NameError.
+import random as _random
+try:
+    _seed_setting = WORLD_SEED
+except NameError:
+    _seed_setting = None
+WORLD_SEED = _seed_setting if _seed_setting is not None else _random.randrange(1_000_000)
 NOISE_SCALE          = 0.08     # smaller = smoother, larger = spikier terrain
 NOISE_OCTAVES        = 3        # layers of detail in the noise
 TERRAIN_BASE_HEIGHT  = 6        # average ground height (in blocks, 0-15)

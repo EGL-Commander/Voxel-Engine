@@ -47,6 +47,11 @@ class App(Window):
     def __init__(self):
         super().__init__()
 
+        # Shown in the window title and printed, so a world you like (or a
+        # bug you hit) can be reproduced: set WORLD_SEED in settings.py.
+        pygame.display.set_caption(f"Voxel Engine — seed {WORLD_SEED}")
+        print(f"World seed: {WORLD_SEED}")
+
         self.input = InputHandler()
 
         # Two separate shader programs: 'terrain' samples the texture atlas
@@ -62,13 +67,15 @@ class App(Window):
 
         self.texture_manager = TextureManager(self.ctx)
 
-        # Pick a spawn column first (on plains, away from any biome border),
-        # then build the initial chunk grid around it — update() re-centers
-        # the grid on the player as they move after that.
-        spawn_x, spawn_z = WorldGenerator().find_spawn_column()
+        # One shared generator for spawn search AND chunk generation — with
+        # a random seed, two separately-created generators would each roll
+        # their own seed and disagree on what the world even looks like.
+        world_generator = WorldGenerator()
+        spawn_x, spawn_z = world_generator.find_spawn_column()
         self.chunk_manager = ChunkManager(
             self.ctx, self.terrain_program, self.texture_manager,
-            center_world_x = spawn_x, center_world_z = spawn_z
+            center_world_x = spawn_x, center_world_z = spawn_z,
+            world_generator = world_generator
         )
 
         # Spawn a few blocks above the ground and let gravity drop the

@@ -4,6 +4,7 @@
 # column of blocks. This is the "procedural" in Procedural World Generation.
 # =============================================================================
 
+import random
 from noise import pnoise2, pnoise3
 from core.settings import *
 
@@ -11,6 +12,22 @@ from core.settings import *
 class WorldGenerator:
     def __init__(self, seed = WORLD_SEED):
         self.seed = seed
+
+        # The noise library's own `base` parameter wraps around at 256 (seed
+        # 0 and seed 256 give the IDENTICAL world), so using it alone would
+        # allow only 256 different worlds. Instead, each noise layer gets its
+        # own random coordinate OFFSET derived from the seed — shifting where
+        # you "look" in an effectively endless noise space gives a huge number
+        # of distinct worlds, and keeps the layers independent of each other
+        # (before, biomes/caves used seed+2/seed+1, needlessly tying them to
+        # the hills' seed).
+        rng = random.Random(seed)
+        self.height_offset = (rng.uniform(-500, 500), rng.uniform(-500, 500))
+        self.cave_offset   = (rng.uniform(-500, 500), rng.uniform(-500, 500),
+                               rng.uniform(-500, 500))
+        self.biome_offset  = (rng.uniform(-500, 500), rng.uniform(-500, 500))
+        self.base          = rng.randrange(256)   # also reshuffles the noise's
+                                                   # internal gradient table
 
     # -------------------------------------------------------------------------
     def get_height(self, world_x, world_z):
@@ -20,10 +37,10 @@ class WorldGenerator:
         that's what makes the world persistent without storing every block.
         """
         noise_value = pnoise2(
-            world_x * NOISE_SCALE,
-            world_z * NOISE_SCALE,
+            world_x * NOISE_SCALE + self.height_offset[0],
+            world_z * NOISE_SCALE + self.height_offset[1],
             octaves = NOISE_OCTAVES,
-            base    = self.seed,
+            base    = self.base,
         )
         # pnoise2 returns roughly -1.0 to 1.0 — scale that into a block height
         height = int(TERRAIN_BASE_HEIGHT + noise_value * TERRAIN_AMPLITUDE)
@@ -44,12 +61,11 @@ class WorldGenerator:
         than scattered single-block holes.
         """
         noise_value = pnoise3(
-            world_x * CAVE_NOISE_SCALE,
-            world_y * CAVE_NOISE_SCALE,
-            world_z * CAVE_NOISE_SCALE,
+            world_x * CAVE_NOISE_SCALE + self.cave_offset[0],
+            world_y * CAVE_NOISE_SCALE + self.cave_offset[1],
+            world_z * CAVE_NOISE_SCALE + self.cave_offset[2],
             octaves = 3,
-            base    = self.seed + 1,   # offset from the height noise's seed
-                                        # so caves aren't correlated with hills
+            base    = self.base,
         )
         return noise_value > CAVE_THRESHOLD
 
@@ -65,10 +81,10 @@ class WorldGenerator:
         sit between the other two, so you never hit a hard desert-to-snow edge.
         """
         value = pnoise2(
-            world_x * BIOME_SCALE,
-            world_z * BIOME_SCALE,
+            world_x * BIOME_SCALE + self.biome_offset[0],
+            world_z * BIOME_SCALE + self.biome_offset[1],
             octaves = 2,
-            base    = self.seed + 2,   # own offset, independent of hills/caves
+            base    = self.base,
         )
         if value < BIOME_DESERT_MAX:
             return 'desert'
