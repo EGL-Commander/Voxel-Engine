@@ -4,6 +4,7 @@
 # =============================================================================
 
 import math
+from collections import deque
 import glm
 from core.settings import *
 from world.chunk import Chunk, AIR, STONE, CHUNK_SIZE
@@ -22,56 +23,44 @@ class ChunkManager:
         # would each roll their OWN random seed and disagree with each other.
         self.world_generator = world_generator or WorldGenerator()
 
-        self.chunks = {}   # (chunk_x, chunk_z) -> Chunk
+        self.chunks = {}   # (chunk_x, chunk_z) -> Chunk, only EVER holds fully
+                            # loaded chunks (voxels generated + mesh built)
+
+        # Work queue for spreading chunk loading across frames (see update()).
+        # Each entry is ((chunk_x, chunk_z), job) with job 'load' or 'remesh'.
+        # The two sets mirror what's currently queued, purely so we can check
+        # "is this coord already queued?" in O(1) instead of scanning the
+        # deque — entries are left in the deque when they become stale (e.g.
+        # the player wandered back away before a load even ran) and are just
+        # skipped cheaply when their turn comes up, rather than being
+        # actively removed from the middle of the queue.
+        self.queue         = deque()
+        self.queued_loads  = set()
+        self.queued_remesh = set()
 
         center = (
             math.floor(center_world_x / CHUNK_SIZE),
             math.floor(center_world_z / CHUNK_SIZE),
         )
-        self.build_chunks(center)
-        self.loaded_center = center   # avoids redundant work if update() is
-                                       # called before the player has actually
-                                       # crossed into a new chunk
-
-    # -------------------------------------------------------------------------
-    def build_chunks(self, center):
-        """
-        Builds a square grid of chunks, RENDER_DISTANCE chunks out from
-        `center` in every direction. Used both for the very first load and,
-        by update(), every time that grid needs to shift.
-        """
-        center_x, center_z = center
-        r = RENDER_DISTANCE
-
-        # Pass 1: every chunk's VOXEL DATA, with no mesh yet. Meshing needs
-        # to check neighboring chunks' blocks (to know whether a face at the
-        # chunk's edge is actually hidden), so all of that data has to exist
-        # before any chunk is allowed to start building its mesh.
-        for cx in range(center_x - r, center_x + r + 1):
-            for cz in range(center_z - r, center_z + r + 1):
-                self.chunks[(cx, cz)] = Chunk(cx, cz, self.world_generator)
-
-        # Pass 2: now build every chunk's mesh, with the full picture available.
-        for chunk in self.chunks.values():
-            chunk.build_mesh(self.ctx, self.shader_program, self, self.texture_manager)
-
-    # -------------------------------------------------------------------------
-    def update(self, player_world_x, player_world_z):
-        """
-        Called once per frame. Cheap when the player hasn't left their
-        current chunk (a couple of divisions and a tuple comparison) — the
-        actual load/unload work only runs the moment they cross a chunk
-        boundary, keeping the world centered on wherever they are instead of
-        the fixed grid we started with.
-        """
-        center = (
-            math.floor(player_world_x / CHUNK_SIZE),
-            math.floor(player_world_z / CHUNK_SIZE),
-        )
-        if center == self.loaded_center:
-            return
         self.loaded_center = center
+        self._queue_region(center)
 
+        # The very FIRST load is the one case where spreading the work out
+        # would be worse, not better — the game would open on a mostly empty
+        # void that slowly fills in, instead of the existing one-time
+        # loading pause. So only crossings AFTER startup get spread across
+        # frames; this first batch is drained synchronously right here.
+        while self.queue:
+            self._process_one()
+
+    # -------------------------------------------------------------------------
+    def _queue_region(self, center):
+        """
+        Unloads anything now outside RENDER_DISTANCE of `center` (immediate —
+        releasing GPU buffers is cheap, there's no need to spread that out),
+        and queues everything newly needed for loading (NOT processed here —
+        see update()).
+        """
         center_x, center_z = center
         r = RENDER_DISTANCE
         desired = {
@@ -81,40 +70,79 @@ class ChunkManager:
         }
         current = set(self.chunks.keys())
 
-        # Unload anything now outside the render-distance square.
         for coord in current - desired:
             self.chunks.pop(coord).destroy()
 
-        # Pass 1: voxel data for every newly-needed chunk.
-        new_chunks = {}
         for coord in desired - current:
-            chunk = Chunk(coord[0], coord[1], self.world_generator)
-            self.chunks[coord] = chunk
-            new_chunks[coord] = chunk
+            if coord not in self.queued_loads:
+                self.queue.append((coord, 'load'))
+                self.queued_loads.add(coord)
 
-        # Pass 2: mesh the new chunks now that all their neighbors' voxel
-        # data exists (some of those neighbors are pre-existing chunks we
-        # kept, some are other chunks from this same batch).
-        for chunk in new_chunks.values():
+    # -------------------------------------------------------------------------
+    def _process_one(self):
+        """Does ONE unit of queued work — either loading one new chunk or
+        re-meshing one existing one. See update() for how many of these run
+        per frame."""
+        coord, job = self.queue.popleft()
+
+        if job == 'load':
+            self.queued_loads.discard(coord)
+            if coord in self.chunks:
+                return   # shouldn't normally happen, but cheap to guard
+
+            cx, cz = coord
+            center_x, center_z = self.loaded_center
+            r = RENDER_DISTANCE
+            if not (center_x - r <= cx <= center_x + r and
+                    center_z - r <= cz <= center_z + r):
+                return   # the player moved away before this one's turn came up
+
+            chunk = Chunk(cx, cz, self.world_generator)
+            self.chunks[coord] = chunk
             chunk.build_mesh(self.ctx, self.shader_program, self, self.texture_manager)
 
-        # A chunk we KEPT that happens to border a newly-loaded chunk was
-        # previously culling its edge faces against "nothing" (treated as
-        # air, same as the world's old fixed boundary) — now that a real
-        # neighbor exists there, it needs to be re-meshed too, or you'd see
-        # its old boundary wall still rendered as a solid face sitting in
-        # what should now be open passage into the new chunk.
-        to_remesh = set()
-        for (cx, cz) in new_chunks:
+            # A chunk we already had that borders this new one was previously
+            # culling its edge faces against "nothing" (treated as air, same
+            # as the world's old fixed boundary) — it needs to be re-meshed
+            # too now, or you'd see its old boundary wall still rendered as a
+            # solid face sitting in what should now be open passage.
             for dx, dz in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
                 neighbor = (cx + dx, cz + dz)
-                if neighbor in self.chunks and neighbor not in new_chunks:
-                    to_remesh.add(neighbor)
+                if (neighbor in self.chunks and neighbor != coord
+                        and neighbor not in self.queued_remesh):
+                    self.queue.append((neighbor, 'remesh'))
+                    self.queued_remesh.add(neighbor)
 
-        for coord in to_remesh:
-            chunk = self.chunks[coord]
-            chunk.destroy()
-            chunk.build_mesh(self.ctx, self.shader_program, self, self.texture_manager)
+        elif job == 'remesh':
+            self.queued_remesh.discard(coord)
+            chunk = self.chunks.get(coord)
+            if chunk is not None:   # might have been unloaded since queuing
+                chunk.destroy()
+                chunk.build_mesh(self.ctx, self.shader_program, self, self.texture_manager)
+
+    # -------------------------------------------------------------------------
+    def update(self, player_world_x, player_world_z):
+        """
+        Called once per frame. Cheap when the player hasn't left their
+        current chunk (a couple of divisions and a tuple comparison) and
+        there's nothing left in the work queue — the world re-centers the
+        moment they cross a chunk boundary, but the actual loading/meshing
+        work for that crossing is spread across several frames afterward
+        (CHUNKS_PER_FRAME per frame) instead of all landing in one frame as
+        a single stutter.
+        """
+        center = (
+            math.floor(player_world_x / CHUNK_SIZE),
+            math.floor(player_world_z / CHUNK_SIZE),
+        )
+        if center != self.loaded_center:
+            self.loaded_center = center
+            self._queue_region(center)
+
+        for _ in range(CHUNKS_PER_FRAME):
+            if not self.queue:
+                break
+            self._process_one()
 
     # -------------------------------------------------------------------------
     def get_block_world(self, world_x, world_y, world_z):
@@ -146,7 +174,10 @@ class ChunkManager:
         affected. That's not just this chunk — if the edited block sits right
         on a chunk's edge, the NEIGHBORING chunk's mesh was culling a face
         against it too, so that neighbor needs to be re-meshed as well or
-        you'd see a hole (or a hidden extra face) appear at the seam.
+        you'd see a hole (or a hidden extra face) appear at the seam. This
+        stays synchronous (not queued) — editing one block only ever touches
+        up to 5 chunks, which is cheap enough to just do immediately so the
+        change is visible the instant you click.
         Returns True if the edit happened, False if it was out of bounds.
         """
         if world_y < 0 or world_y >= CHUNK_SIZE:

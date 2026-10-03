@@ -16,6 +16,11 @@ OPENGL_MINOR_VERSION = 3
 # --- World / Chunks ---
 CHUNK_SIZE          = 16        # each chunk is 16 x 16 x 16 blocks
 RENDER_DISTANCE     = 4         # how many chunks to load around the player
+CHUNKS_PER_FRAME    = 2         # how many chunk loads/remeshes to process per
+                                 # frame after the initial load — spreads a
+                                 # chunk-boundary crossing's work (previously
+                                 # all done in one frame, ~100-200ms stutter)
+                                 # across several frames instead
 
 # --- Player / Camera ---
 PLAYER_SPEED        = 0.004     # was 0.003 — bumped ~30%, applies to WASD + space/shift
