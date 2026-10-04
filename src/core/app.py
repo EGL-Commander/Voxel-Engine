@@ -20,6 +20,7 @@ from world.chunk_manager import ChunkManager
 from world.world_generator import WorldGenerator
 from world.chunk import AIR, GRASS, DIRT, STONE, SAND, SNOW, BLOCK_NAMES
 from rendering.hud import HUD
+from core.save_manager import SaveManager
 
 # Hotbar: number key -> block type it places. Extend this dict (and
 # HOTBAR_COLORS below) as new block types get added.
@@ -42,15 +43,16 @@ HOTBAR_COLORS = {
     SNOW:  (0.94, 0.96, 0.97),
 }
 
+# A new game starts having collected nothing — you have to mine blocks
+# before you can place them. Used as a base so a save from an older version
+# (missing a block type that's been added since) still ends up with every
+# key present, instead of a KeyError the first time that block is selected.
+DEFAULT_INVENTORY = {GRASS: 0, DIRT: 0, STONE: 0, SAND: 0, SNOW: 0}
+
 
 class App(Window):
     def __init__(self):
         super().__init__()
-
-        # Shown in the window title and printed, so a world you like (or a
-        # bug you hit) can be reproduced: set WORLD_SEED in settings.py.
-        pygame.display.set_caption(f"Voxel Engine — seed {WORLD_SEED}")
-        print(f"World seed: {WORLD_SEED}")
 
         self.input = InputHandler()
 
@@ -67,29 +69,62 @@ class App(Window):
 
         self.texture_manager = TextureManager(self.ctx)
 
+        # Load a save if one exists — everything about how the world starts
+        # (seed, spawn point, look direction, inventory, every block edit)
+        # branches on whether we're resuming a game or starting fresh.
+        save = SaveManager.load()
+
+        if save is not None:
+            self.world_seed  = save['seed']
+            world_generator  = WorldGenerator(seed = self.world_seed)
+            spawn_x, spawn_y, spawn_z = save['player_x'], save['player_y'], save['player_z']
+            spawn_yaw, spawn_pitch   = save['yaw'], save['pitch']
+            self.selected_block = save['selected_block']
+            self.inventory       = {**DEFAULT_INVENTORY, **save['inventory']}
+            edits                 = save['edits']
+            print(f"Loaded save (seed {self.world_seed})")
+        else:
+            self.world_seed = WORLD_SEED
+            world_generator = WorldGenerator()
+            spawn_x, spawn_z = world_generator.find_spawn_column()
+            # Spawn a few blocks above the ground and let gravity drop the
+            # player onto the terrain — a nice built-in proof that physics
+            # is actually running, not just decorative code.
+            ground_height = world_generator.get_height(spawn_x, spawn_z)
+            # +0.5 centers the player on the block instead of its corner —
+            # save files don't need this since they store an exact position
+            # that was already centered when it was originally spawned.
+            spawn_x, spawn_z = spawn_x + 0.5, spawn_z + 0.5
+            spawn_y = ground_height + 5
+            spawn_yaw, spawn_pitch = -90, -10   # Player's own defaults
+            self.selected_block = STONE
+            self.inventory       = dict(DEFAULT_INVENTORY)
+            edits                 = {}
+
+        # Window title always reflects the seed ACTUALLY in use — which, with
+        # a loaded save, is that save's seed, not whatever settings.py says.
+        pygame.display.set_caption(f"Voxel Engine — seed {self.world_seed}")
+        print(f"World seed: {self.world_seed}")
+
         # One shared generator for spawn search AND chunk generation — with
         # a random seed, two separately-created generators would each roll
         # their own seed and disagree on what the world even looks like.
-        world_generator = WorldGenerator()
-        spawn_x, spawn_z = world_generator.find_spawn_column()
         self.chunk_manager = ChunkManager(
             self.ctx, self.terrain_program, self.texture_manager,
             center_world_x = spawn_x, center_world_z = spawn_z,
-            world_generator = world_generator
+            world_generator = world_generator, edits = edits
         )
 
-        # Spawn a few blocks above the ground and let gravity drop the
-        # player onto the terrain — a nice built-in proof that physics is
-        # actually running, not just decorative code.
-        ground_height = self.chunk_manager.world_generator.get_height(spawn_x, spawn_z)
-        spawn = (spawn_x + 0.5, ground_height + 5, spawn_z + 0.5)
-        self.player = Player(self.chunk_manager, spawn)
+        self.player = Player(self.chunk_manager, (spawn_x, spawn_y, spawn_z))
+        # Player's own constructor always starts facing its own default
+        # direction — restore the saved look direction on top of that.
+        self.player.camera.yaw   = spawn_yaw
+        self.player.camera.pitch = spawn_pitch
+        self.player.camera.update_vectors()
+        self.player.camera.m_view = self.player.camera.get_view_matrix()
 
-        # No text/font rendering exists yet, so there's no on-screen hotbar
-        # list — the crosshair's color doubles as the "selected block"
-        # indicator until a real HUD exists.
-        self.selected_block = STONE
-        self.crosshair = Crosshair(self.ctx, self.ui_program, HOTBAR_COLORS[STONE])
+        self.crosshair = Crosshair(self.ctx, self.ui_program, HOTBAR_COLORS[self.selected_block])
+        self.autosave_timer = 0
 
         # Debug HUD: position/biome/looking-at/fps, toggled with F3. F4 looks
         # for the nearest cave and shows how far away it is, since caves have
@@ -111,6 +146,8 @@ class App(Window):
             self.hud_visible = not self.hud_visible
         elif key == pygame.K_F4:
             self.find_nearest_cave()
+        elif key == pygame.K_F5:
+            self.save_game()
         else:
             self.input.handle_keydown(key)
 
@@ -135,8 +172,12 @@ class App(Window):
         hit_block, _ = raycast(
             self.chunk_manager, self.player.camera.position, self.player.camera.forward
         )
-        if hit_block is not None:
-            self.chunk_manager.set_block(*hit_block, AIR)
+        if hit_block is None:
+            return
+
+        broken_type = self.chunk_manager.get_block_world(*hit_block)
+        if self.chunk_manager.set_block(*hit_block, AIR):
+            self.inventory[broken_type] = self.inventory.get(broken_type, 0) + 1
 
     # -------------------------------------------------------------------------
     def place_block(self):
@@ -153,7 +194,23 @@ class App(Window):
         ):
             return
 
-        self.chunk_manager.set_block(*place_block, self.selected_block)
+        if self.inventory.get(self.selected_block, 0) <= 0:
+            return   # nothing left of this block type to place
+
+        if self.chunk_manager.set_block(*place_block, self.selected_block):
+            self.inventory[self.selected_block] -= 1
+
+    # -------------------------------------------------------------------------
+    def save_game(self):
+        SaveManager.save(
+            seed             = self.world_seed,
+            player_position  = self.player.position,
+            yaw              = self.player.camera.yaw,
+            pitch            = self.player.camera.pitch,
+            selected_block   = self.selected_block,
+            inventory        = self.inventory,
+            edits            = self.chunk_manager.edits,
+        )
 
     # -------------------------------------------------------------------------
     def hud_lines(self):
@@ -162,7 +219,7 @@ class App(Window):
         biome  = self.chunk_manager.world_generator.get_biome(int(p.x), int(p.z))
 
         lines = [
-            f"seed {WORLD_SEED}    fps {self.clock.get_fps():.0f}",
+            f"seed {self.world_seed}    fps {self.clock.get_fps():.0f}",
             f"pos {p.x:.1f}, {p.y:.1f}, {p.z:.1f}   biome {biome}",
             f"yaw {camera.yaw:.0f}  pitch {camera.pitch:.0f}   "
             f"chunks {len(self.chunk_manager.chunks)}",
@@ -175,7 +232,14 @@ class App(Window):
         else:
             lines.append("looking at: (nothing in reach)")
 
-        lines.append(f"selected: {BLOCK_NAMES[self.selected_block]}  (keys 1-5)")
+        selected_count = self.inventory.get(self.selected_block, 0)
+        lines.append(
+            f"selected: {BLOCK_NAMES[self.selected_block]} x{selected_count}  (keys 1-5)"
+        )
+        lines.append("inv: " + "  ".join(
+            f"{BLOCK_NAMES[b]} {self.inventory.get(b, 0)}"
+            for b in (GRASS, DIRT, STONE, SAND, SNOW)
+        ))
 
         if self.cave_target is not None:
             tx, ty, tz = self.cave_target
@@ -186,7 +250,7 @@ class App(Window):
         else:
             lines.append("F4: find nearest cave")
 
-        lines.append("F3: toggle this display")
+        lines.append("F3: toggle display   F5: save")
         return lines
 
     # -------------------------------------------------------------------------
@@ -208,6 +272,11 @@ class App(Window):
             self.input.keys, self.input.mouse_dx, self.input.mouse_dy, dt
         )
         self.chunk_manager.update(self.player.position.x, self.player.position.z)
+
+        self.autosave_timer += dt
+        if self.autosave_timer >= AUTOSAVE_INTERVAL_MS:
+            self.autosave_timer = 0
+            self.save_game()
 
         camera = self.player.camera
         self.terrain_program['m_proj'].write(camera.m_proj)
@@ -234,6 +303,7 @@ class App(Window):
 
     # -------------------------------------------------------------------------
     def quit(self):
+        self.save_game()
         self.hud.destroy()
         self.crosshair.destroy()
         self.texture_manager.destroy()

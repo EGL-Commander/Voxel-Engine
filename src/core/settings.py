@@ -35,6 +35,10 @@ CROSSHAIR_SIZE      = 0.02      # half-length of each crosshair line, in NDC uni
 HUD_FONT_SIZE       = 22        # debug text size, in pixels
 HUD_UPDATE_MS       = 100       # how often the debug text is re-rendered
 
+# --- Saving ---
+AUTOSAVE_INTERVAL_MS = 30000     # how often the game autosaves while running,
+                                  # on top of always saving on quit and F5
+
 # --- Physics ---
 # All in blocks per millisecond (or per ms^2 for gravity) since dt comes from
 # pygame's clock in milliseconds. Space is now a jump instead of fly-up;

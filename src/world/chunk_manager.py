@@ -13,7 +13,7 @@ from world.world_generator import WorldGenerator
 
 class ChunkManager:
     def __init__(self, ctx, shader_program, texture_manager, center_world_x = 0, center_world_z = 0,
-                 world_generator = None):
+                 world_generator = None, edits = None):
         self.ctx             = ctx
         self.shader_program  = shader_program
         self.texture_manager = texture_manager
@@ -22,6 +22,13 @@ class ChunkManager:
         # matters once the seed is random: two separately-created generators
         # would each roll their OWN random seed and disagree with each other.
         self.world_generator = world_generator or WorldGenerator()
+
+        # Player edits (breaking/placing), layered on top of procedural
+        # generation. Keyed by (chunk_x, chunk_z) -> {(local_x,y,z): block_id}
+        # so applying them to a newly-loaded chunk only costs looking up
+        # THAT chunk's edits, not scanning every edit ever made. Loaded from
+        # a save file if one exists (see app.py), otherwise starts empty.
+        self.edits = edits if edits is not None else {}
 
         self.chunks = {}   # (chunk_x, chunk_z) -> Chunk, only EVER holds fully
                             # loaded chunks (voxels generated + mesh built)
@@ -52,6 +59,16 @@ class ChunkManager:
         # frames; this first batch is drained synchronously right here.
         while self.queue:
             self._process_one()
+
+    # -------------------------------------------------------------------------
+    def _apply_edits(self, chunk):
+        """Overwrites this freshly-procedurally-generated chunk's voxels with
+        any saved edits for it — called right after a chunk is created, both
+        on first load and every time it's re-streamed back in later."""
+        local_edits = self.edits.get((chunk.chunk_x, chunk.chunk_z))
+        if local_edits:
+            for (lx, ly, lz), block_id in local_edits.items():
+                chunk.voxels[lx, ly, lz] = block_id
 
     # -------------------------------------------------------------------------
     def _queue_region(self, center):
@@ -98,6 +115,7 @@ class ChunkManager:
                 return   # the player moved away before this one's turn came up
 
             chunk = Chunk(cx, cz, self.world_generator)
+            self._apply_edits(chunk)
             self.chunks[coord] = chunk
             chunk.build_mesh(self.ctx, self.shader_program, self, self.texture_manager)
 
@@ -191,6 +209,7 @@ class ChunkManager:
             return False   # outside the currently loaded world
 
         chunk.voxels[local_x, world_y, local_z] = block_id
+        self.edits.setdefault((chunk_x, chunk_z), {})[(local_x, world_y, local_z)] = block_id
         self._remesh_around(chunk_x, chunk_z)
         return True
 

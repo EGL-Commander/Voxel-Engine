@@ -133,3 +133,5 @@ out/
 
 # Patch files
 *.patch
+# Player save data (per-player, not part of the project)
+save.json
