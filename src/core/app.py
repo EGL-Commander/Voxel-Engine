@@ -126,6 +126,13 @@ class App(Window):
         self.crosshair = Crosshair(self.ctx, self.ui_program, HOTBAR_COLORS[self.selected_block])
         self.autosave_timer = 0
 
+        # Creative mode is a SESSION toggle, not something saved — it always
+        # starts off, even when resuming a save. Flying and infinite
+        # placement are bundled into one toggle (same as Minecraft's own
+        # creative mode) since that's the simpler, more familiar mental
+        # model than two separate keys.
+        self.creative_mode = False
+
         # Debug HUD: position/biome/looking-at/fps, toggled with F3. F4 looks
         # for the nearest cave and shows how far away it is, since caves have
         # no other way to be found short of digging blind.
@@ -148,8 +155,16 @@ class App(Window):
             self.find_nearest_cave()
         elif key == pygame.K_F5:
             self.save_game()
+        elif key == pygame.K_c:
+            self.toggle_creative()
         else:
             self.input.handle_keydown(key)
+
+    # -------------------------------------------------------------------------
+    def toggle_creative(self):
+        self.creative_mode  = not self.creative_mode
+        self.player.flying  = self.creative_mode
+        self.player.velocity_y = 0   # don't carry fall speed into/out of flight
 
     # -------------------------------------------------------------------------
     def find_nearest_cave(self):
@@ -176,7 +191,12 @@ class App(Window):
             return
 
         broken_type = self.chunk_manager.get_block_world(*hit_block)
-        if self.chunk_manager.set_block(*hit_block, AIR):
+        placed = self.chunk_manager.set_block(*hit_block, AIR)
+        # In creative mode, breaking doesn't add to your SURVIVAL inventory
+        # (same as Minecraft creative) — it just removes the block. Keeps
+        # creative-mode experimentation from polluting the real inventory
+        # you'll have when you switch back.
+        if placed and not self.creative_mode:
             self.inventory[broken_type] = self.inventory.get(broken_type, 0) + 1
 
     # -------------------------------------------------------------------------
@@ -194,11 +214,14 @@ class App(Window):
         ):
             return
 
-        if self.inventory.get(self.selected_block, 0) <= 0:
+        # Creative mode places freely, ignoring (and not touching) the
+        # survival inventory count entirely.
+        if not self.creative_mode and self.inventory.get(self.selected_block, 0) <= 0:
             return   # nothing left of this block type to place
 
         if self.chunk_manager.set_block(*place_block, self.selected_block):
-            self.inventory[self.selected_block] -= 1
+            if not self.creative_mode:
+                self.inventory[self.selected_block] -= 1
 
     # -------------------------------------------------------------------------
     def save_game(self):
@@ -250,6 +273,8 @@ class App(Window):
         else:
             lines.append("F4: find nearest cave")
 
+        mode = "CREATIVE" if self.creative_mode else "SURVIVAL"
+        lines.append(f"mode: {mode}  (C to toggle)")
         lines.append("F3: toggle display   F5: save")
         return lines
 

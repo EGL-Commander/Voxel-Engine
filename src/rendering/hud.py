@@ -15,7 +15,7 @@ from core.settings import WINDOW_WIDTH, WINDOW_HEIGHT, HUD_FONT_SIZE, HUD_UPDATE
 
 PADDING   = 8     # pixels between the panel edge and the text
 MARGIN    = 10    # pixels between the panel and the window edge
-MAX_LINES = 9     # the panel is a fixed size, so it needs a line cap
+MAX_LINES = 11    # the panel is a fixed size, so it needs a line cap
 
 
 class HUD:

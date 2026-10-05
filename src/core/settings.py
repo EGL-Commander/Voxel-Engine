@@ -25,6 +25,10 @@ CHUNKS_PER_FRAME    = 2         # how many chunk loads/remeshes to process per
 # --- Player / Camera ---
 PLAYER_SPEED        = 0.004     # was 0.003 — bumped ~30%, applies to WASD + space/shift
 SPRINT_MULTIPLIER   = 1.6       # holding shift while moving multiplies speed by this
+FLY_SPEED           = 0.008     # horizontal AND vertical speed while flying
+                                 # (creative mode) — faster than normal walking
+                                 # speed since flying is meant for covering
+                                 # ground quickly to explore/showcase the world
 MOUSE_SENSITIVITY   = 0.12      # was 0.002 — way too low, ~60x more here
 FOV                 = 50        # field of view in degrees
 NEAR_PLANE          = 0.1       # closest distance camera renders
