@@ -13,7 +13,7 @@ from PIL import Image
 # this list is the only place that needs to change — the count follows it.
 TILE_NAMES = [
     'grass_top', 'grass_side', 'dirt', 'stone',
-    'sand', 'snow_top', 'snow_side',
+    'sand', 'snow_top', 'snow_side', 'water',
 ]
 TILE_COUNT = len(TILE_NAMES)
 

@@ -15,11 +15,12 @@ DIRT  = 2
 STONE = 3
 SAND  = 4
 SNOW  = 5
+WATER = 6
 
 # Human-readable names, for the debug HUD and anywhere else text is shown.
 BLOCK_NAMES = {
     AIR: 'air', GRASS: 'grass', DIRT: 'dirt', STONE: 'stone',
-    SAND: 'sand', SNOW: 'snow',
+    SAND: 'sand', SNOW: 'snow', WATER: 'water',
 }
 
 # Per biome: (surface block, filler block used for the 2 layers under it).
@@ -41,6 +42,7 @@ BLOCK_FACE_TEXTURES = {
     STONE: {'top': 'stone',     'bottom': 'stone', 'sides': 'stone'},
     SAND:  {'top': 'sand',      'bottom': 'sand',  'sides': 'sand'},
     SNOW:  {'top': 'snow_top',  'bottom': 'dirt',  'sides': 'snow_side'},
+    WATER: {'top': 'water',     'bottom': 'water', 'sides': 'water'},
 }
 
 # UV coordinates for each face's 4 corners, in the SAME order as that face's
@@ -110,7 +112,7 @@ class Chunk:
         on top (grass / sand / snow), 2 filler layers under it, stone for
         everything below that, air above ground.
         """
-        voxels = np.zeros((CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE), dtype = np.uint8)
+        voxels = np.zeros((CHUNK_SIZE, WORLD_HEIGHT, CHUNK_SIZE), dtype = np.uint8)
 
         for lx in range(CHUNK_SIZE):
             for lz in range(CHUNK_SIZE):
@@ -122,10 +124,19 @@ class Chunk:
                 surface_block, filler_block = BIOME_BLOCKS[
                     world_generator.get_biome(world_x, world_z)
                 ]
+                # Snow-capped peaks: regardless of biome, high enough ground
+                # is forced to snow — the filler stays the biome's own
+                # choice (so a desert mountain is sand-then-snow-cap, not
+                # a jarring full snow biome switch).
+                if height >= SNOW_LINE:
+                    surface_block = SNOW
 
-                for ly in range(CHUNK_SIZE):
+                for ly in range(WORLD_HEIGHT):
                     if ly > height:
-                        voxels[lx, ly, lz] = AIR
+                        # Below sea level but above the real ground, this
+                        # column is a lake/sea bed — flood it with water
+                        # instead of leaving it as open air.
+                        voxels[lx, ly, lz] = WATER if ly <= SEA_LEVEL else AIR
                     elif ly == height:
                         voxels[lx, ly, lz] = surface_block
                     elif ly >= height - 2:
@@ -170,7 +181,7 @@ class Chunk:
         # as open air (so the top of the tallest hill is never sealed shut).
         if ly < 0:
             return STONE
-        if ly >= CHUNK_SIZE:
+        if ly >= WORLD_HEIGHT:
             return AIR
 
         if 0 <= lx < CHUNK_SIZE and 0 <= lz < CHUNK_SIZE:
@@ -199,7 +210,7 @@ class Chunk:
         next_index = 0
 
         for lx in range(CHUNK_SIZE):
-            for ly in range(CHUNK_SIZE):
+            for ly in range(WORLD_HEIGHT):
                 for lz in range(CHUNK_SIZE):
                     block = self.voxels[lx, ly, lz]
                     if block == AIR:

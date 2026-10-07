@@ -14,7 +14,10 @@ OPENGL_MAJOR_VERSION = 3
 OPENGL_MINOR_VERSION = 3
 
 # --- World / Chunks ---
-CHUNK_SIZE          = 16        # each chunk is 16 x 16 x 16 blocks
+CHUNK_SIZE          = 16        # horizontal chunk width/depth (X and Z only)
+WORLD_HEIGHT        = 96        # vertical world height, in blocks — decoupled
+                                 # from CHUNK_SIZE on purpose: a 16-tall world
+                                 # left no room for real mountains
 RENDER_DISTANCE     = 4         # how many chunks to load around the player
 CHUNKS_PER_FRAME    = 2         # how many chunk loads/remeshes to process per
                                  # frame after the initial load — spreads a
@@ -91,8 +94,30 @@ except NameError:
 WORLD_SEED = _seed_setting if _seed_setting is not None else _random.randrange(1_000_000)
 NOISE_SCALE          = 0.08     # smaller = smoother, larger = spikier terrain
 NOISE_OCTAVES        = 3        # layers of detail in the noise
-TERRAIN_BASE_HEIGHT  = 6        # average ground height (in blocks, 0-15)
-TERRAIN_AMPLITUDE    = 4        # how far hills rise/fall from the base height
+TERRAIN_AMPLITUDE    = 4        # fine local bumpiness on top of everything below
+
+# Height is built from 3 stacked noise layers, each a different "scale" of
+# feature, then clamped to WORLD_HEIGHT — same idea modern Minecraft uses
+# (continentalness + erosion + peaks/valleys), simplified to 3 layers:
+#   1. CONTINENT — very low frequency, huge slow-rising/falling landmasses.
+#      This replaces the old single TERRAIN_BASE_HEIGHT constant with
+#      something that actually varies across the world instead of a flat
+#      average everywhere.
+#   2. MOUNTAIN  — decides WHERE mountain ranges exist (MOUNTAIN_REGION_SCALE,
+#      a gate — only positive values become mountainous at all) and their
+#      jagged peak/valley shape within those regions (MOUNTAIN_RIDGE_SCALE,
+#      via ridged noise: 1-abs(noise), which gives sharp ridgelines instead
+#      of smooth round hills).
+#   3. detail — the original NOISE_SCALE/TERRAIN_AMPLITUDE hill bumpiness,
+#      unchanged, layered on top for local texture everywhere.
+SEA_LEVEL             = 20      # columns ending below this flood with water
+CONTINENT_SCALE       = 0.004   # very low freq = huge, slow-changing landmasses
+CONTINENT_AMPLITUDE   = 8       # how far the base landmass sits above/below sea level
+MOUNTAIN_REGION_SCALE = 0.006   # decides WHERE mountain ranges occur (huge regions)
+MOUNTAIN_RIDGE_SCALE  = 0.02    # spacing of individual peaks/valleys within a range
+MOUNTAIN_HEIGHT       = 36      # max extra height a mountain region can add
+SNOW_LINE             = 42      # surface is forced to snow at/above this height,
+                                 # regardless of biome — snow-capped peaks
 
 # --- Biomes ---
 BIOME_SCALE          = 0.012    # much smaller than NOISE_SCALE = big regions

@@ -22,7 +22,10 @@ class WorldGenerator:
         # (before, biomes/caves used seed+2/seed+1, needlessly tying them to
         # the hills' seed).
         rng = random.Random(seed)
-        self.height_offset = (rng.uniform(-500, 500), rng.uniform(-500, 500))
+        self.height_offset           = (rng.uniform(-500, 500), rng.uniform(-500, 500))
+        self.continent_offset        = (rng.uniform(-500, 500), rng.uniform(-500, 500))
+        self.mountain_region_offset  = (rng.uniform(-500, 500), rng.uniform(-500, 500))
+        self.mountain_ridge_offset   = (rng.uniform(-500, 500), rng.uniform(-500, 500))
         self.cave_offset   = (rng.uniform(-500, 500), rng.uniform(-500, 500),
                                rng.uniform(-500, 500))
         self.biome_offset  = (rng.uniform(-500, 500), rng.uniform(-500, 500))
@@ -35,18 +38,64 @@ class WorldGenerator:
         Returns the ground height (in blocks) at a given WORLD (not local
         chunk) x/z coordinate. Same input always gives the same output —
         that's what makes the world persistent without storing every block.
+
+        Built from 3 stacked layers (see settings.py for the full picture):
+        continent (where the land sits overall), mountain (dramatic peaks
+        in some regions only), and fine detail (the original hill bumpiness).
         """
-        noise_value = pnoise2(
+        continent_noise = pnoise2(
+            world_x * CONTINENT_SCALE + self.continent_offset[0],
+            world_z * CONTINENT_SCALE + self.continent_offset[1],
+            octaves = 2,
+            base    = self.base,
+        )
+        base_elevation = SEA_LEVEL + continent_noise * CONTINENT_AMPLITUDE
+
+        # Mountain REGION: only POSITIVE values become mountainous at all —
+        # negative regions contribute nothing, staying as gentle continent
+        # terrain. This is what keeps most of the world as rolling plains
+        # with mountains concentrated in specific large ranges, rather than
+        # jagged peaks scattered evenly everywhere.
+        region_noise = pnoise2(
+            world_x * MOUNTAIN_REGION_SCALE + self.mountain_region_offset[0],
+            world_z * MOUNTAIN_REGION_SCALE + self.mountain_region_offset[1],
+            octaves = 2,
+            base    = self.base,
+        )
+        # region_noise rarely reaches past roughly +-0.5 in practice (2-octave
+        # Perlin doesn't actually span the full -1..1 range), so without
+        # amplifying it here, "mountain_region" would almost never get
+        # anywhere close to 1 and mountains would stay nearly flat everywhere
+        # — measured and caught exactly this before tuning the x3 below.
+        # Ramps 0->1 as region_noise goes 0->0.33, then clamps at 1 — so
+        # there's real full-strength mountain territory, not just a sliver
+        # that only ever approaches full height at one single noise value.
+        mountain_region = min(1.0, max(0.0, region_noise) * 3.0)
+
+        # Mountain RIDGE shape: 1-abs(noise) turns ordinary smooth Perlin
+        # noise into sharp ridgelines (values peak near 1 right where the
+        # underlying noise crosses zero, instead of smooth round hilltops).
+        ridge_noise = pnoise2(
+            world_x * MOUNTAIN_RIDGE_SCALE + self.mountain_ridge_offset[0],
+            world_z * MOUNTAIN_RIDGE_SCALE + self.mountain_ridge_offset[1],
+            octaves = 4,
+            base    = self.base,
+        )
+        ridged = (1.0 - abs(ridge_noise)) ** 2   # squared sharpens peaks further
+
+        mountain_contribution = mountain_region * ridged * MOUNTAIN_HEIGHT
+
+        detail_noise = pnoise2(
             world_x * NOISE_SCALE + self.height_offset[0],
             world_z * NOISE_SCALE + self.height_offset[1],
             octaves = NOISE_OCTAVES,
             base    = self.base,
         )
-        # pnoise2 returns roughly -1.0 to 1.0 — scale that into a block height
-        height = int(TERRAIN_BASE_HEIGHT + noise_value * TERRAIN_AMPLITUDE)
 
-        # keep it inside the chunk's vertical bounds (0 to CHUNK_SIZE - 1)
-        return max(0, min(CHUNK_SIZE - 1, height))
+        height = int(base_elevation + detail_noise * TERRAIN_AMPLITUDE + mountain_contribution)
+
+        # keep it inside the world's vertical bounds (0 to WORLD_HEIGHT - 1)
+        return max(0, min(WORLD_HEIGHT - 1, height))
 
     # -------------------------------------------------------------------------
     def is_cave(self, world_x, world_y, world_z):
@@ -98,12 +147,16 @@ class WorldGenerator:
         Searches outward (in growing square rings) from a starting point for
         a column that is plains AND has plains on all sides out to `margin`
         blocks, so you spawn on grass with room to walk instead of on a
-        biome border or in a desert/snow patch. Falls back to the start
-        point if nothing is found (only possible in a freak seed).
+        biome border or in a desert/snow patch — and, now that sea-level
+        water exists, also above SEA_LEVEL everywhere in that margin, so
+        you don't spawn standing in (or right at the edge of) a lake.
+        Falls back to the start point if nothing is found (only possible
+        in a freak seed).
         """
         def is_safe(x, z):
             return all(
                 self.get_biome(x + dx, z + dz) == 'plains'
+                and self.get_height(x + dx, z + dz) > SEA_LEVEL
                 for dx in (-margin, 0, margin)
                 for dz in (-margin, 0, margin)
             )

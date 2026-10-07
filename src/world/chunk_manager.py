@@ -7,7 +7,7 @@ import math
 from collections import deque
 import glm
 from core.settings import *
-from world.chunk import Chunk, AIR, STONE, CHUNK_SIZE
+from world.chunk import Chunk, AIR, STONE, CHUNK_SIZE, WORLD_HEIGHT
 from world.world_generator import WorldGenerator
 
 
@@ -172,7 +172,7 @@ class ChunkManager:
         """
         if world_y < 0:
             return STONE
-        if world_y >= CHUNK_SIZE:
+        if world_y >= WORLD_HEIGHT:
             return AIR
 
         chunk_x, local_x = divmod(world_x, CHUNK_SIZE)
@@ -198,7 +198,7 @@ class ChunkManager:
         change is visible the instant you click.
         Returns True if the edit happened, False if it was out of bounds.
         """
-        if world_y < 0 or world_y >= CHUNK_SIZE:
+        if world_y < 0 or world_y >= WORLD_HEIGHT:
             return False   # can't edit the "floor" or above the build limit
 
         chunk_x, local_x = divmod(world_x, CHUNK_SIZE)
