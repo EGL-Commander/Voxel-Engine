@@ -19,6 +19,13 @@ SAVE_PATH = 'save.json'
 class SaveManager:
     # -------------------------------------------------------------------------
     @staticmethod
+    def exists():
+        """True if there's a save file to continue from — used by the main
+        menu to decide whether to offer 'Continue' at all."""
+        return os.path.exists(SAVE_PATH)
+
+    # -------------------------------------------------------------------------
+    @staticmethod
     def load():
         """Returns the saved game state as a dict, or None if there's no save
         file yet (a brand-new game)."""

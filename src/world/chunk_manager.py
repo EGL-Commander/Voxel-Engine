@@ -182,7 +182,11 @@ class ChunkManager:
         if chunk is None:
             return AIR   # outside the currently loaded world
 
-        return chunk.voxels[local_x, world_y, local_z]
+        # int(): voxels is a numpy uint8 array, so a bare index returns a
+        # numpy scalar, not a plain int. Anything that later used that as a
+        # dict key (the inventory) then failed JSON-saving with "keys must be
+        # str, int, ... not uint8". Hand out plain ints so it can't leak.
+        return int(chunk.voxels[local_x, world_y, local_z])
 
     # -------------------------------------------------------------------------
     def set_block(self, world_x, world_y, world_z, block_id):

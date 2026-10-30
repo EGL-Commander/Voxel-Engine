@@ -16,6 +16,7 @@ from player.physics import block_intersects_box
 from rendering.shader import ShaderProgram
 from rendering.texture_manager import TextureManager
 from rendering.crosshair import Crosshair
+from rendering.menu import MainMenu
 from world.chunk_manager import ChunkManager
 from world.world_generator import WorldGenerator
 from world.chunk import AIR, GRASS, DIRT, STONE, SAND, SNOW, BLOCK_NAMES
@@ -69,10 +70,30 @@ class App(Window):
 
         self.texture_manager = TextureManager(self.ctx)
 
-        # Load a save if one exists — everything about how the world starts
-        # (seed, spawn point, look direction, inventory, every block edit)
-        # branches on whether we're resuming a game or starting fresh.
-        save = SaveManager.load()
+        # Nothing game-world-related exists until a menu choice is made —
+        # see start_game(). These stay None the whole time if the player
+        # quits straight from the menu.
+        self.chunk_manager = None
+        self.player        = None
+        self.crosshair     = None
+        self.hud           = None
+
+        self.state = 'menu'
+        self.menu  = MainMenu(self.ctx, self.hud_program, save_exists = SaveManager.exists())
+
+        self.run()
+
+    # -------------------------------------------------------------------------
+    def start_game(self, load_save):
+        """
+        Called once, the moment the player picks New Game or Continue from
+        the menu. Everything that used to happen unconditionally at startup
+        (loading a save, finding a spawn point, building the world, the
+        player, the HUD) now only happens here, once that choice is made —
+        which is what lets New Game skip loading the save entirely instead
+        of it being forced on every launch.
+        """
+        save = SaveManager.load() if load_save else None
 
         if save is not None:
             self.world_seed  = save['seed']
@@ -140,12 +161,29 @@ class App(Window):
         self.hud_visible = True
         self.cave_target = None
 
-        self.run()
+        self.menu.destroy()
+        self.menu  = None
+        self.state = 'playing'
 
     # -------------------------------------------------------------------------
     # Window calls these when it sees KEYDOWN/KEYUP/MOUSEBUTTONDOWN events
     # (see window.py)
     def on_keydown(self, key):
+        if self.state == 'menu':
+            if key in (pygame.K_UP, pygame.K_w):
+                self.menu.move_selection(-1)
+            elif key in (pygame.K_DOWN, pygame.K_s):
+                self.menu.move_selection(1)
+            elif key in (pygame.K_RETURN, pygame.K_SPACE):
+                choice = self.menu.confirm()
+                if choice == 'New Game':
+                    self.start_game(load_save = False)
+                elif choice == 'Continue':
+                    self.start_game(load_save = True)
+                elif choice == 'Quit':
+                    self.quit()
+            return
+
         if key in HOTBAR:
             self.selected_block = HOTBAR[key]
             self.crosshair.set_color(HOTBAR_COLORS[self.selected_block])
@@ -174,9 +212,12 @@ class App(Window):
         )
 
     def on_keyup(self, key):
-        self.input.handle_keyup(key)
+        if self.state != 'menu':
+            self.input.handle_keyup(key)
 
     def on_mousedown(self, button):
+        if self.state != 'playing':
+            return   # nothing to break/place — there's no world yet
         if button == 1:      # left click — break the block you're looking at
             self.break_block()
         elif button == 3:    # right click — place one against its face
@@ -196,8 +237,11 @@ class App(Window):
         # (same as Minecraft creative) — it just removes the block. Keeps
         # creative-mode experimentation from polluting the real inventory
         # you'll have when you switch back.
-        if placed and not self.creative_mode:
-            self.inventory[broken_type] = self.inventory.get(broken_type, 0) + 1
+        # Only real inventory items are collected. Anything else (water, which
+        # has no hotbar slot and can't be placed) is just removed — otherwise
+        # it became a brand-new inventory key the saver wasn't built for.
+        if placed and not self.creative_mode and broken_type in DEFAULT_INVENTORY:
+            self.inventory[broken_type] += 1
 
     # -------------------------------------------------------------------------
     def place_block(self):
@@ -292,6 +336,10 @@ class App(Window):
 
     # -------------------------------------------------------------------------
     def update(self, dt):
+        if self.state == 'menu':
+            return   # menu only redraws on input (see MainMenu), nothing
+                      # needs to happen here every frame
+
         self.input.update_mouse()
         self.player.update(
             self.input.keys, self.input.mouse_dx, self.input.mouse_dy, dt
@@ -312,6 +360,11 @@ class App(Window):
 
     # -------------------------------------------------------------------------
     def render(self):
+        if self.state == 'menu':
+            self.ctx.clear(color = BG_COLOR)
+            self.menu.render()
+            return
+
         self.ctx.clear(color = BG_COLOR)
 
         self.texture_manager.use(location = 0)
@@ -328,10 +381,13 @@ class App(Window):
 
     # -------------------------------------------------------------------------
     def quit(self):
-        self.save_game()
-        self.hud.destroy()
-        self.crosshair.destroy()
+        if self.state == 'playing':
+            self.save_game()
+            self.hud.destroy()
+            self.crosshair.destroy()
+            self.chunk_manager.destroy()
+        elif self.menu is not None:
+            self.menu.destroy()
         self.texture_manager.destroy()
-        self.chunk_manager.destroy()
         self.shader.destroy()
         super().quit()
